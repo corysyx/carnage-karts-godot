@@ -1,0 +1,615 @@
+class_name Hud
+extends Control
+## Heads-up display, menus, results, pause, CRT overlay and touch controls.
+## Layout uses "design units": the screen is 225 units tall (like the browser version).
+
+var race: Node
+var font: Font
+var u := 1.0
+var W := 400.0
+var touch_mode := false
+var joy_vy := 0.0
+var screen_blood: Array[Dictionary] = []
+var fingers := {}          # touch index -> role
+var joy_origin := Vector2()
+var joy_pos := Vector2()
+var joy_active := false
+
+var menu: Control
+var results: Control
+var pause_panel: Control
+var crt: ColorRect
+var char_buttons: Array[Button] = []
+var res_title: Label
+var res_grid: GridContainer
+var seg_buttons := {}
+
+const YELLOW := Color("ffe36e")
+const INKC := Color("2a1830")
+const RANKCOL := [Color("ffe36e"), Color("e6e9ff"), Color("ffb27a"), Color.WHITE, Color.WHITE, Color.WHITE]
+
+static func ordinal(n: int) -> String:
+	var suf := "th"
+	if n % 100 < 11 or n % 100 > 13:
+		suf = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+	return str(n) + suf
+
+static func fmt(tm: float) -> String:
+	if tm < 0.0:
+		return "--:--.--"
+	var m := int(tm / 60.0)
+	var s := tm - m * 60.0
+	return "%d:%05.2f" % [m, s]
+
+func setup(r: Node) -> void:
+	race = r
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	font = get_theme_default_font()
+	touch_mode = DisplayServer.is_touchscreen_available()
+	_build_crt()
+	_build_menu()
+	_build_results()
+	_build_pause()
+	set_crt(race.settings.get_value("video", "crt", true))
+	set_aa(race.settings.get_value("video", "aa", true))
+
+# ------------------------------------------------------------------ widgets
+func _style(col: Color, radius := 14, border := Color(1, 1, 1, 0.25)) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = col
+	sb.set_corner_radius_all(radius)
+	sb.border_color = border
+	sb.set_border_width_all(3)
+	sb.content_margin_left = 14
+	sb.content_margin_right = 14
+	sb.content_margin_top = 8
+	sb.content_margin_bottom = 8
+	return sb
+
+func _button(text: String, col := Color("ff4f8b"), size := 26) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.add_theme_font_size_override("font_size", size)
+	b.add_theme_stylebox_override("normal", _style(col, 999, col.darkened(0.35)))
+	b.add_theme_stylebox_override("hover", _style(col.lightened(0.1), 999, col.darkened(0.35)))
+	b.add_theme_stylebox_override("pressed", _style(col.darkened(0.15), 999, col.darkened(0.35)))
+	b.add_theme_stylebox_override("focus", _style(col, 999, Color.WHITE))
+	b.add_theme_color_override("font_color", Color.WHITE)
+	b.add_theme_color_override("font_outline_color", INKC)
+	b.add_theme_constant_override("outline_size", 6)
+	return b
+
+func _label(text: String, size: int, col := Color.WHITE, outline := 8) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_color_override("font_color", col)
+	l.add_theme_color_override("font_outline_color", INKC)
+	l.add_theme_constant_override("outline_size", outline)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	return l
+
+func _overlay() -> Control:
+	var bg := ColorRect.new()
+	bg.color = Color(0.12, 0.05, 0.16, 0.55)
+	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(bg)
+	var sc := ScrollContainer.new()
+	sc.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	bg.add_child(sc)
+	var cc := CenterContainer.new()
+	cc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cc.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	cc.custom_minimum_size = Vector2(0, 0)
+	sc.add_child(cc)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 12)
+	vb.alignment = BoxContainer.ALIGNMENT_CENTER
+	cc.add_child(vb)
+	bg.set_meta("vb", vb)
+	bg.set_meta("cc", cc)
+	return bg
+
+func _seg(vb: VBoxContainer, title: String, opts: Array, cur: int, cb: Callable) -> void:
+	var hb := HBoxContainer.new()
+	hb.alignment = BoxContainer.ALIGNMENT_CENTER
+	hb.add_theme_constant_override("separation", 6)
+	hb.add_child(_label(title, 20, Color.WHITE, 6))
+	var group: Array[Button] = []
+	for i in opts.size():
+		var b := _button(opts[i], Color("ff4f6e") if i == cur else Color(1, 1, 1, 0.14), 18)
+		b.toggle_mode = false
+		var idx := i
+		b.pressed.connect(func():
+			for j in group.size():
+				var c := Color("ff4f6e") if j == idx else Color(1, 1, 1, 0.14)
+				group[j].add_theme_stylebox_override("normal", _style(c, 999, c.darkened(0.3)))
+				group[j].add_theme_stylebox_override("hover", _style(c.lightened(0.1), 999, c.darkened(0.3)))
+			cb.call(idx))
+		group.append(b)
+		hb.add_child(b)
+	vb.add_child(hb)
+
+func _build_menu() -> void:
+	menu = _overlay()
+	var vb: VBoxContainer = menu.get_meta("vb")
+	var title := _label("Carnage Karts", 64, YELLOW, 18)
+	title.add_theme_color_override("font_shadow_color", Color("e0306f"))
+	title.add_theme_constant_override("shadow_offset_y", 5)
+	vb.add_child(title)
+	vb.add_child(_label("Six cute critters. Three laps. A very messy finish.", 18, Color.WHITE, 6))
+	var hb := HBoxContainer.new()
+	hb.alignment = BoxContainer.ALIGNMENT_CENTER
+	hb.add_theme_constant_override("separation", 8)
+	for i in Critters.SPECIES.size():
+		var sp: Dictionary = Critters.SPECIES[i]
+		var b := _button(sp.name, sp.kart, 18)
+		b.custom_minimum_size = Vector2(108, 52)
+		var idx := i
+		b.pressed.connect(func(): _select(idx))
+		char_buttons.append(b)
+		hb.add_child(b)
+	vb.add_child(hb)
+	_seg(vb, "Gore:", ["Off", "On", "Extra"], race.gore_level, func(i): race.gore_level = i; race.gore.level = i)
+	_seg(vb, "CRT filter:", ["Off", "On"], 1 if race.settings.get_value("video", "crt", true) else 0, func(i): set_crt(i == 1))
+	_seg(vb, "Anti-aliasing:", ["Off", "On"], 1 if race.settings.get_value("video", "aa", true) else 0, func(i): set_aa(i == 1))
+	var start := _button("Start Race", Color("ff4f8b"), 30)
+	start.custom_minimum_size = Vector2(260, 60)
+	start.pressed.connect(func(): race.start_race())
+	var sc := CenterContainer.new()
+	sc.add_child(start)
+	vb.add_child(sc)
+	var help := _label("", 15, Color(1, 1, 1, 0.9), 5)
+	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	help.custom_minimum_size = Vector2(min(760, get_viewport_rect().size.x - 40), 0)
+	if touch_mode:
+		help.text = "Karts drive themselves. Touch the left side to steer (push up/down to aim items). ITEM fires, tap the slots up top to swap, hold DRIFT round corners."
+	else:
+		help.text = "W / Up gas · S / Down brake · A D / Left Right steer · Shift drift · Space use item (hold Up/Down to aim) · Q swap item · R back to track · P pause · M mute"
+	vb.add_child(help)
+	_select(race.selected, true)
+
+func _select(i: int, quiet := false) -> void:
+	race.selected = i
+	for j in char_buttons.size():
+		var b := char_buttons[j]
+		var sp: Dictionary = Critters.SPECIES[j]
+		var border: Color = YELLOW if j == i else (sp.kart as Color).darkened(0.35)
+		b.add_theme_stylebox_override("normal", _style(sp.kart, 999, border))
+		b.add_theme_stylebox_override("hover", _style(sp.kart.lightened(0.1), 999, border))
+		b.scale = Vector2(1.08, 1.08) if j == i else Vector2.ONE
+		b.pivot_offset = b.custom_minimum_size * 0.5
+	if not quiet:
+		race._spawn_racers(true)
+		Sfx.play("get", 0.5)
+
+func _build_results() -> void:
+	results = _overlay()
+	results.visible = false
+	var vb: VBoxContainer = results.get_meta("vb")
+	res_title = _label("Results", 44, YELLOW, 14)
+	vb.add_child(res_title)
+	var pc := PanelContainer.new()
+	pc.add_theme_stylebox_override("panel", _style(Color(0, 0, 0, 0.35), 16, Color(1, 1, 1, 0.15)))
+	res_grid = GridContainer.new()
+	res_grid.columns = 4
+	res_grid.add_theme_constant_override("h_separation", 26)
+	res_grid.add_theme_constant_override("v_separation", 4)
+	pc.add_child(res_grid)
+	vb.add_child(pc)
+	var hb := HBoxContainer.new()
+	hb.alignment = BoxContainer.ALIGNMENT_CENTER
+	hb.add_theme_constant_override("separation", 14)
+	var again := _button("Race Again")
+	again.pressed.connect(func(): results.visible = false; race.start_race())
+	var back := _button("Change Critter", Color("6c5ce7"))
+	back.pressed.connect(func(): to_menu())
+	hb.add_child(again)
+	hb.add_child(back)
+	vb.add_child(hb)
+
+func _build_pause() -> void:
+	pause_panel = _overlay()
+	pause_panel.visible = false
+	var vb: VBoxContainer = pause_panel.get_meta("vb")
+	vb.add_child(_label("Paused", 48, YELLOW, 14))
+	var hb := HBoxContainer.new()
+	hb.alignment = BoxContainer.ALIGNMENT_CENTER
+	hb.add_theme_constant_override("separation", 14)
+	var res := _button("Resume")
+	res.pressed.connect(func(): race.toggle_pause())
+	var quit := _button("Quit to Menu", Color("6c5ce7"))
+	quit.pressed.connect(func(): race.paused = false; pause_panel.visible = false; to_menu())
+	hb.add_child(res)
+	hb.add_child(quit)
+	vb.add_child(hb)
+
+func _build_crt() -> void:
+	crt = ColorRect.new()
+	crt.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	crt.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sh := Shader.new()
+	sh.code = """
+shader_type canvas_item;
+uniform float rows = 225.0;
+void fragment() {
+	vec2 uv = UV;
+	float line = 0.5 + 0.5 * cos(uv.y * rows * 6.2831853);
+	float scan = (1.0 - line) * 0.26;
+	vec2 d = (uv - 0.5) * vec2(1.0, 1.15);
+	float vig = smoothstep(0.42, 0.78, length(d));
+	float roll = smoothstep(0.06, 0.0, abs(fract(uv.y - TIME * 0.12) - 0.5)) * 0.05;
+	float mask = mod(floor(FRAGCOORD.x), 3.0);
+	vec3 tint = mask < 1.0 ? vec3(1.0, 0.3, 0.3) : (mask < 2.0 ? vec3(0.3, 1.0, 0.4) : vec3(0.35, 0.45, 1.0));
+	COLOR = vec4(mix(vec3(0.0), tint, 0.25), scan + vig * 0.6);
+	COLOR.rgb += roll;
+	COLOR.a = max(COLOR.a, roll);
+}
+"""
+	var m := ShaderMaterial.new()
+	m.shader = sh
+	crt.material = m
+	add_child(crt)
+
+func set_crt(on: bool) -> void:
+	crt.visible = on
+	race.settings.set_value("video", "crt", on)
+	race.settings.save("user://settings.cfg")
+
+func set_aa(on: bool) -> void:
+	get_viewport().msaa_3d = Viewport.MSAA_4X if on else Viewport.MSAA_DISABLED
+	race.settings.set_value("video", "aa", on)
+	race.settings.save("user://settings.cfg")
+
+# ------------------------------------------------------------------ flow
+func on_race_start() -> void:
+	menu.visible = false
+	results.visible = false
+	screen_blood.clear()
+
+func to_menu() -> void:
+	race.state = "menu"
+	race.paused = false
+	results.visible = false
+	pause_panel.visible = false
+	menu.visible = true
+	race.gore.reset()
+	for p in race.projectiles:
+		p.node.queue_free()
+	race.projectiles.clear()
+	race._spawn_racers(true)
+
+func show_pause(on: bool) -> void:
+	pause_panel.visible = on
+
+func show_results() -> void:
+	for c in res_grid.get_children():
+		c.queue_free()
+	var rows: Array = []
+	for k in race.order:
+		var tm: float = k.finish_time if k.finished else race.race_time + float(race.LAPS * race.world.N - k.prog) * 0.5 / 15.5
+		rows.append({"k": k, "t": tm, "est": not k.finished})
+	rows.sort_custom(func(a, b): return a.t < b.t)
+	for h in ["#", "Racer", "Time", "Splats" if race.gore_level > 0 else "Bonks"]:
+		res_grid.add_child(_label(h, 16, Color(1, 1, 1, 0.7), 4))
+	var place := 0
+	for i in rows.size():
+		var r: Dictionary = rows[i]
+		var k: Kart = r.k
+		var col := YELLOW if k.is_player else Color.WHITE
+		if k.is_player:
+			place = i + 1
+		res_grid.add_child(_label(ordinal(i + 1), 22, col, 6))
+		res_grid.add_child(_label(k.sp.name + (" (you)" if k.is_player else ""), 22, col, 6))
+		res_grid.add_child(_label(fmt(r.t) + (" *" if r.est else ""), 22, col, 6))
+		res_grid.add_child(_label(str(k.kills), 22, col, 6))
+	res_title.text = "Champion Critter!" if place == 1 else "You finished " + ordinal(place)
+	results.visible = true
+
+func add_screen_blood(n: int, big: bool) -> void:
+	if race.gore_level == 0:
+		return
+	for i in n:
+		var r := (12.0 if big else 6.0) + randf() * (24.0 if big else 12.0)
+		var s := {"x": randf() * W, "y": randf() * 190.0, "r": r, "life": 2.6 + randf() * 1.6, "blobs": [], "drips": []}
+		for b in 7:
+			var a := randf() * TAU
+			var d := r * (0.6 + randf() * 0.8)
+			s.blobs.append(Vector3(cos(a) * d, sin(a) * d, r * (0.15 + randf() * 0.3)))
+		for d in 2 + randi() % 3:
+			s.drips.append({"dx": (randf() - 0.5) * r * 1.3, "w": 1.5 + randf() * 3.0, "len": 0.0, "sp": 6.0 + randf() * 18.0})
+		screen_blood.append(s)
+	if screen_blood.size() > 40:
+		screen_blood = screen_blood.slice(screen_blood.size() - 40)
+
+# ------------------------------------------------------------------ touch
+func _btn_pos(name: String) -> Vector3:
+	# returns (x, y, radius) in design units
+	match name:
+		"item": return Vector3(W - 30, 192, 24)
+		"drift": return Vector3(W - 80, 200, 18)
+		"brake": return Vector3(W - 122, 205, 16)
+		"pause": return Vector3(W / 2.0 + 60, 18, 11)
+	return Vector3.ZERO
+
+func _hit(name: String, p: Vector2) -> bool:
+	var b := _btn_pos(name)
+	return p.distance_to(Vector2(b.x, b.y)) < b.z * 1.15
+
+func _input(e: InputEvent) -> void:
+	if e is InputEventScreenTouch:
+		touch_mode = true
+	if not touch_mode or not (race.state == "race" or race.state == "countdown" or race.state == "finished") or race.paused:
+		return
+	if e is InputEventScreenTouch:
+		var p: Vector2 = e.position / u
+		if e.pressed:
+			var role := ""
+			if _hit("item", p):
+				role = "item"
+				race.item_pressed = true
+			elif _hit("drift", p):
+				role = "drift"
+				race.touch_drift = true
+			elif _hit("brake", p):
+				role = "brake"
+				race.touch_brake = true
+			elif _hit("pause", p):
+				role = "pause"
+				race.toggle_pause()
+			elif p.y < 46 and absf(p.x - W / 2.0) < 42:
+				role = "slot"
+				race.swap_slot(race.player, 0 if p.x < W / 2.0 else 1)
+			elif p.x < W / 2.0 and not joy_active:
+				role = "joy"
+				joy_active = true
+				joy_origin = p
+				joy_pos = p
+			fingers[e.index] = role
+		else:
+			var role: String = fingers.get(e.index, "")
+			fingers.erase(e.index)
+			match role:
+				"drift": race.touch_drift = false
+				"brake": race.touch_brake = false
+				"joy":
+					joy_active = false
+					race.touch_steer = 0.0
+					joy_vy = 0.0
+		get_viewport().set_input_as_handled()
+	elif e is InputEventScreenDrag:
+		if fingers.get(e.index, "") == "joy":
+			var p: Vector2 = e.position / u
+			var d := p - joy_origin
+			var R := 26.0
+			if d.length() > R:
+				d = d.normalized() * R
+			joy_pos = joy_origin + d
+			var v := d.x / R
+			v = 0.0 if absf(v) < 0.08 else (v - signf(v) * 0.08) / 0.92
+			race.touch_steer = clampf(v, -1.0, 1.0)
+			joy_vy = clampf(-d.y / R, -1.0, 1.0)
+		get_viewport().set_input_as_handled()
+
+# ------------------------------------------------------------------ drawing helpers
+func T(s: String, x: float, y: float, size: float, align := HORIZONTAL_ALIGNMENT_LEFT, col := Color.WHITE) -> void:
+	var fs := int(size * u)
+	var w := font.get_string_size(s, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+	var px := x * u
+	if align == HORIZONTAL_ALIGNMENT_CENTER:
+		px -= w * 0.5
+	elif align == HORIZONTAL_ALIGNMENT_RIGHT:
+		px -= w
+	draw_string_outline(font, Vector2(px, y * u), s, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, maxi(2, int(fs * 0.22)), INKC)
+	draw_string(font, Vector2(px, y * u), s, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
+
+func C(x: float, y: float, r: float, col: Color) -> void:
+	draw_circle(Vector2(x, y) * u, r * u, col)
+
+func RR(x: float, y: float, w: float, h: float, col: Color, border := Color(0, 0, 0, 0), bw := 0.0, rad := 8.0) -> void:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = col
+	sb.set_corner_radius_all(int(rad * u))
+	if bw > 0.0:
+		sb.border_color = border
+		sb.set_border_width_all(int(maxf(1.0, bw * u)))
+	draw_style_box(sb, Rect2(x * u, y * u, w * u, h * u))
+
+func icon(it: String, cx: float, cy: float, s: float) -> void:
+	var c := Vector2(cx, cy) * u
+	var k := s * u
+	match it:
+		"rocket":
+			var pts := PackedVector2Array([c + Vector2(0.45, -0.45) * k, c + Vector2(-0.3, 0.05) * k, c + Vector2(-0.05, 0.3) * k])
+			draw_colored_polygon(pts, Color("ff8a2a"))
+			draw_polyline(PackedVector2Array([pts[0], pts[1], pts[2], pts[0]]), INKC, 1.5 * u)
+			draw_circle(c + Vector2(-0.3, 0.32) * k, 0.12 * k, Color("5cc25c"))
+			draw_circle(c + Vector2(-0.38, 0.2) * k, 0.1 * k, Color("5cc25c"))
+		"saw":
+			var pts := PackedVector2Array()
+			for i in 24:
+				var a := i / 24.0 * TAU
+				pts.append(c + Vector2(cos(a), sin(a)) * k * (0.45 if i % 2 == 0 else 0.33))
+			draw_colored_polygon(pts, Color("e8e4f0"))
+			pts.append(pts[0])
+			draw_polyline(pts, INKC, 1.5 * u)
+			draw_circle(c, 0.12 * k, Color("6f6482"))
+		"mine":
+			for i in 8:
+				var a := i / 8.0 * TAU
+				draw_line(c, c + Vector2(cos(a), sin(a)) * k * 0.45, Color("4a4458"), 2.5 * u)
+			draw_circle(c, 0.28 * k, Color("5b5368"))
+			draw_circle(c + Vector2(0, -0.32) * k, 0.09 * k, Color("ff3355"))
+		"slime":
+			draw_set_transform(c, 0, Vector2(1, 0.45))
+			draw_circle(Vector2.ZERO, 0.45 * k, Color("86e65f"))
+			draw_set_transform(Vector2.ZERO)
+			draw_circle(c + Vector2(-0.12, -0.04) * k, 0.06 * k, INKC)
+			draw_circle(c + Vector2(0.12, -0.04) * k, 0.06 * k, INKC)
+		"boost":
+			draw_rect(Rect2(c + Vector2(-0.04, 0.0) * k, Vector2(0.08, 0.45) * k), Color("fff7e8"))
+			draw_circle(c + Vector2(0, -0.12) * k, 0.3 * k, Color("ff6fa8"))
+			draw_arc(c + Vector2(0, -0.12) * k, 0.17 * k, 0, 4.5, 12, Color.WHITE, 2.0 * u)
+		"shield":
+			draw_circle(c, 0.4 * k, Color("7fd6ff"))
+			draw_circle(c, 0.33 * k, Color("b9ecff"))
+			draw_circle(c + Vector2(-0.14, -0.14) * k, 0.08 * k, Color.WHITE)
+
+# ------------------------------------------------------------------ draw
+func _draw() -> void:
+	var vs := get_viewport_rect().size
+	u = vs.y / 225.0
+	W = vs.x / u
+	# screen blood
+	for s in screen_blood:
+		var a := clampf(s.life / 1.2, 0.0, 1.0) * 0.88
+		var col := Color(0.59, 0.0, 0.05, a)
+		C(s.x, s.y, s.r, col)
+		for b in s.blobs:
+			C(s.x + b.x, s.y + b.y, b.z, col)
+		for d in s.drips:
+			var l := minf(d.len, 60.0)
+			draw_rect(Rect2((s.x + d.dx - d.w / 2.0) * u, s.y * u, d.w * u, l * u), col)
+			C(s.x + d.dx, s.y + l, d.w * 0.75, col)
+		C(s.x - s.r * 0.2, s.y - s.r * 0.2, s.r * 0.55, Color(0.35, 0.0, 0.03, a * 0.6))
+	if race.hit_flash > 0.0:
+		var fc := Color(0.8, 0.0, 0.08) if race.gore_level > 0 else Color(1.0, 0.9, 0.43)
+		for i in 6:
+			var inset := i * 6.0
+			draw_rect(Rect2(inset * u, inset * u, (W - inset * 2.0) * u, (225.0 - inset * 2.0) * u), Color(fc, race.hit_flash * 0.18), false, 6.0 * u)
+	if race.state == "menu" or race.player == null:
+		return
+	var P: Kart = race.player
+	var CX := W / 2.0
+	var RX := W - 10.0
+	T("LAP %d/%d" % [clampi(P.lap + 1, 1, race.LAPS), race.LAPS], 10, 20, 15)
+	T(fmt(0.0 if race.state == "countdown" else (P.finish_time if P.finished else race.race_time)), 10, 36, 12, HORIZONTAL_ALIGNMENT_LEFT, YELLOW)
+	if P.last_lap >= 0.0:
+		T("last %s · best %s" % [fmt(P.last_lap), fmt(P.best_lap)], 10, 47, 7)
+	for i in race.order.size():
+		var k: Kart = race.order[i]
+		var y: float = 62.0 + i * 11.0
+		C(14, y - 3, 4.6, INKC)
+		C(14, y - 3, 3.6, k.sp.fur)
+		C(14, y - 3, 1.6, k.sp.kart)
+		T("%d. %s%s" % [i + 1, k.sp.name, " ☠" if (k.ko > 0.0 and not k.drown) else ""], 22, y, 7.5, HORIZONTAL_ALIGNMENT_LEFT, YELLOW if k.is_player else Color.WHITE)
+	var r := P.rank + 1
+	T(ordinal(r), RX, 42, 36, HORIZONTAL_ALIGNMENT_RIGHT, RANKCOL[r - 1])
+	T("of %d" % race.racers.size(), RX, 54, 8, HORIZONTAL_ALIGNMENT_RIGHT)
+	# item slots
+	var cs := P.cur_slot()
+	var rs := P.free_slot() if P.roulette > 0.0 else -1
+	for si in 2:
+		var act := si == (P.sel if cs < 0 else cs)
+		var bs := 36.0 if act else 28.0
+		var bx := CX + (21.0 if si else -21.0) - bs / 2.0
+		var yy := 6.0 + (0.0 if act else 4.0)
+		RR(bx, yy, bs, bs, Color(1, 0.89, 0.43, 0.28) if act else Color(1, 1, 1, 0.16), YELLOW if act else Color(1, 1, 1, 0.7), 3.0 if act else 1.8, 8)
+		var it = null
+		if si == rs:
+			it = race.ITEMS[int(race.t * 14.0) % 6]
+		elif P.items[si] != null:
+			it = P.items[si]
+		if it != null:
+			icon(it, bx + bs / 2.0, yy + bs / 2.0, bs * 0.85)
+		T(str(si + 1), bx + 3, yy + bs - 3, 6, HORIZONTAL_ALIGNMENT_LEFT, YELLOW if act else Color.WHITE)
+	var ci = P.cur_item()
+	if ci != null:
+		var hint := "" if touch_mode else " (hold Up/Down to aim)"
+		var sw := ""
+		if P.items[0] != null and P.items[1] != null:
+			sw = " · tap to swap" if touch_mode else " · Q swap"
+		T(race.ITEM_NAME[ci] + ("" if touch_mode else " — SPACE") + hint + sw, CX, 54, 7, HORIZONTAL_ALIGNMENT_CENTER)
+	if P.shield > 0.0:
+		T("shield %ds" % ceili(P.shield), CX, 64 if ci != null else 54, 7, HORIZONTAL_ALIGNMENT_CENTER, Color("9fe3ff"))
+	# minimap
+	_draw_minimap(Vector2(RX - 64, 62) if touch_mode else Vector2(8, 225 - 80), 64.0 if touch_mode else 72.0)
+	# speed
+	var spd := "%d km/h" % roundi(absf(P.speed) * 3.6)
+	if touch_mode:
+		T(spd, CX, 220, 10, HORIZONTAL_ALIGNMENT_CENTER, Color("ff8ad0") if P.boost > 0.0 else Color.WHITE)
+	else:
+		T("%d" % roundi(absf(P.speed) * 3.6), RX, 212, 18, HORIZONTAL_ALIGNMENT_RIGHT, Color("ff8ad0") if P.boost > 0.0 else Color.WHITE)
+		T("km/h", RX, 220, 6, HORIZONTAL_ALIGNMENT_RIGHT)
+	if P.drift_t > 0.9:
+		T("BOOST READY!", CX if touch_mode else RX, 188, 7, HORIZONTAL_ALIGNMENT_CENTER if touch_mode else HORIZONTAL_ALIGNMENT_RIGHT, Color("ff8ad0"))
+	# centre messages
+	if race.state == "countdown":
+		var n := ceili(race.cd)
+		if n > 0 and n <= 3:
+			var sc: float = 1.0 + (race.cd - floorf(race.cd)) * 0.5
+			T(str(n), CX, 105, 44 * sc, HORIZONTAL_ALIGNMENT_CENTER, [Color("7be05a"), YELLOW, Color("ff7a8a")][n - 1])
+	if race.go_t > 0.0:
+		T("GO!", CX, 105, 44 + (1.0 - race.go_t) * 20.0, HORIZONTAL_ALIGNMENT_CENTER, Color("7be05a"))
+	if P.ko > 0.0 and not P.drown and race.gore_level > 0:
+		T("SPLAT!", CX, 110, 30, HORIZONTAL_ALIGNMENT_CENTER, Color("ff5a6e"))
+	for i in race.msgs.size():
+		var m: Dictionary = race.msgs[i]
+		T(m.text, CX, 78 + i * 13, 9.5, HORIZONTAL_ALIGNMENT_CENTER, Color(m.col, clampf(m.t * 2.0, 0.0, 1.0)))
+	if race.state == "race" and P.ko <= 0.0 and P.speed > 2.5:
+		var tg: Vector2 = race.world.T[P.seg]
+		if P.forward().dot(tg) < -0.4 and int(race.t * 3.0) % 2 == 0:
+			T("WRONG WAY!", CX, 130, 16, HORIZONTAL_ALIGNMENT_CENTER, Color("ff7a8a"))
+	if P.off_t > 2.5 and P.ko <= 0.0 and race.state == "race":
+		T("Lost? Hang tight…" if touch_mode else "Lost? Press R", CX, 150, 9, HORIZONTAL_ALIGNMENT_CENTER)
+	if race.state == "finished":
+		T("FINISH!", CX, 118, 34, HORIZONTAL_ALIGNMENT_CENTER, YELLOW)
+	if Sfx.muted:
+		T("muted", RX, 70, 7, HORIZONTAL_ALIGNMENT_RIGHT)
+	if touch_mode:
+		_draw_touch()
+
+func _draw_minimap(o: Vector2, s: float) -> void:
+	var w: WorldGen = race.world
+	var sc := s / 120.0
+	var c := o + Vector2(s, s) * 0.5
+	var pts := PackedVector2Array()
+	for i in range(0, w.N + 1, 4):
+		var p := w.P[i % w.N]
+		pts.append((c + p * sc) * u)
+	draw_polyline(pts, Color(0.16, 0.09, 0.19, 0.75), 7.0 * u * sc * 3.0)
+	draw_polyline(pts, Color.WHITE, 3.5 * u * sc * 3.0)
+	C(c.x + w.P[0].x * sc, c.y + w.P[0].y * sc, 2.5, YELLOW)
+	for p in race.projectiles:
+		if p.speed > 0.0:
+			continue
+		var q: Vector2 = c + p.pos * sc
+		draw_rect(Rect2((q - Vector2(1.5, 1.5)) * u, Vector2(3, 3) * u), Color("ff3355") if p.type == "mine" else Color("7be05a"))
+	var rev: Array = race.order.duplicate()
+	rev.reverse()
+	for k in rev:
+		var kp: Vector2 = Vector2(k.ko_pos.x, k.ko_pos.z) if k.ko > 0.0 else k.pos
+		var q: Vector2 = c + kp * sc
+		var rr := 4.2 if k.is_player else 3.2
+		C(q.x, q.y, rr + 1.0, Color.WHITE if k.is_player else INKC)
+		C(q.x, q.y, rr, k.sp.kart)
+
+func _draw_touch() -> void:
+	if race.state != "race" and race.state != "countdown" and race.state != "finished":
+		return
+	for nm in ["brake", "drift", "item"]:
+		var b := _btn_pos(nm)
+		var held: bool = (nm == "brake" and race.touch_brake) or (nm == "drift" and race.touch_drift)
+		var base := Color(1, 0.31, 0.55, 0.5) if nm == "item" else Color(0.16, 0.09, 0.19, 0.35)
+		C(b.x, b.y, b.z, Color(1, 1, 1, 0.5) if held else base)
+		draw_arc(Vector2(b.x, b.y) * u, b.z * u, 0, TAU, 32, Color(1, 1, 1, 0.6), 2.0 * u)
+		T(nm.to_upper(), b.x, b.y + 3.5, 9 if nm != "item" else 12, HORIZONTAL_ALIGNMENT_CENTER)
+	var pb := _btn_pos("pause")
+	C(pb.x, pb.y, pb.z, Color(0.16, 0.09, 0.19, 0.4))
+	draw_arc(Vector2(pb.x, pb.y) * u, pb.z * u, 0, TAU, 24, Color(1, 1, 1, 0.6), 1.5 * u)
+	T("II", pb.x, pb.y + 3.5, 9, HORIZONTAL_ALIGNMENT_CENTER)
+	if joy_active:
+		C(joy_origin.x, joy_origin.y, 26, Color(0.16, 0.09, 0.19, 0.25))
+		draw_arc(joy_origin * u, 26 * u, 0, TAU, 32, Color(1, 1, 1, 0.45), 2.0 * u)
+		C(joy_pos.x, joy_pos.y, 11, Color(1, 1, 1, 0.7))
+
+func _process(dt: float) -> void:
+	if race == null or race.paused:
+		return
+	for s in screen_blood:
+		s.life -= dt
+		for d in s.drips:
+			d.len += d.sp * dt
+	screen_blood = screen_blood.filter(func(s): return s.life > 0.0)
