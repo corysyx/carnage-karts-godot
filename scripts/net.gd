@@ -94,6 +94,7 @@ func _new_room_code() -> String:
 
 func _start_relay(room: String, as_host: bool) -> bool:
 	relay = MqttPeer.new()
+	relay.debug = race.autotest
 	relay.refused.connect(func(why: String):
 		fail("That race has already started. Try again when it's over." if why == "racing" else "That room is full (6 players)."))
 	relay.broker_failed.connect(func():

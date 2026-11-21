@@ -134,6 +134,7 @@ func _read_mqtt() -> void:
 		rx = rx.slice(i + rem)
 		match h & 0xF0:
 			0x20:   # CONNACK
+				_dbg("connack %s" % body)
 				if body.size() >= 2 and body[1] == 0:
 					mqtt_up = true
 					var subs := [_topic(my_id)]
@@ -143,6 +144,7 @@ func _read_mqtt() -> void:
 				else:
 					_fail()
 			0x90:   # SUBACK
+				_dbg("suback")
 				sub_ok = true
 				if server:
 					status = MultiplayerPeer.CONNECTION_CONNECTED
@@ -205,7 +207,13 @@ func _on_payload(p: PackedByteArray) -> void:
 	if kind == Kind.DATA:
 		inbox.append([from, p[9], p[10], p.slice(11)])
 
+var debug := false
+func _dbg(t: String) -> void:
+	if debug:
+		print("[relay] ", t)
+
 func _fail() -> void:
+	_dbg("fail: ws state %d, mqtt_up %s, sub %s" % [ws.get_ready_state(), mqtt_up, sub_ok])
 	status = MultiplayerPeer.CONNECTION_DISCONNECTED
 	ws.close()
 	broker_failed.emit()
@@ -223,11 +231,13 @@ func _poll() -> void:
 	if st == WebSocketPeer.STATE_OPEN:
 		if not mqtt_up and keep_t == 0.0:
 			keep_t = 0.001
+			_dbg("socket open, protocol '%s'" % ws.get_selected_protocol())
 			_mqtt_connect()
 		while ws.get_available_packet_count() > 0:
 			rx.append_array(ws.get_packet())
 		_read_mqtt()
 	elif st == WebSocketPeer.STATE_CLOSED:
+		_dbg("socket closed code %d reason '%s'" % [ws.get_close_code(), ws.get_close_reason()])
 		if status != MultiplayerPeer.CONNECTION_DISCONNECTED:
 			if server:
 				for id in peers.keys():
