@@ -87,7 +87,7 @@ func _ready() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--shots="):
 			shot_dir = arg.substr(8)
-			shots = [2.0, 9.0, 18.0, 30.0, 45.0]
+			shots = [2.0, 9.0, 18.0, 30.0, 45.0, 60.0]
 		if arg.begins_with("--map="):
 			load_map(int(arg.substr(6)))
 		if arg.begins_with("--mode="):
@@ -121,9 +121,12 @@ func load_map(i: int) -> void:
 			k.queue_free()
 		racers.clear()
 		world.queue_free()
+	var t0 := Time.get_ticks_msec()
 	world = WorldGen.new()
 	add_child(world)
 	world.build(Tracks.THEMES[map_idx])
+	if autotest:
+		print("map %s built in %d ms (lap %.0f m)" % [Tracks.THEMES[map_idx].name, Time.get_ticks_msec() - t0, world.N * WorldGen.SPACING])
 	Env.apply_theme(Tracks.THEMES[map_idx])
 	if gore.world == null:
 		gore.setup(self, world)

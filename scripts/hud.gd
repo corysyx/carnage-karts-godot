@@ -887,14 +887,15 @@ func _draw() -> void:
 
 func _draw_minimap(o: Vector2, s: float) -> void:
 	var w: WorldGen = race.world
-	var sc := s / 120.0
+	var sc := s / (2.0 * w.map_half)
+	var lw := clampf(sc * 3.0, 0.45, 1.6)
 	var c := o + Vector2(s, s) * 0.5
 	var pts := PackedVector2Array()
 	for i in range(0, w.N + 1, 4):
 		var p := w.P[i % w.N]
 		pts.append((c + p * sc) * u)
-	draw_polyline(pts, Color(0.16, 0.09, 0.19, 0.75), 7.0 * u * sc * 3.0)
-	draw_polyline(pts, Color.WHITE, 3.5 * u * sc * 3.0)
+	draw_polyline(pts, Color(0.16, 0.09, 0.19, 0.75), 7.0 * u * lw)
+	draw_polyline(pts, Color.WHITE, 3.5 * u * lw)
 	C(c.x + w.P[0].x * sc, c.y + w.P[0].y * sc, 2.5, YELLOW)
 	for p in race.projectiles:
 		if p.speed > 0.0:

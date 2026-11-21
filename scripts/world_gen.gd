@@ -13,8 +13,6 @@ const WALL_OUT := 7.5
 const BLEND := 7.0
 const WATER := 1.5
 const KLIM := 6.25       # kart centre can't go further from the road centre than this where there's a fence
-const EXT := 84.0        # terrain half-size
-const GRID := 1.5
 const SPACING := 0.5
 const BK := 8.0
 
@@ -32,6 +30,26 @@ var buckets := {}
 var rng := RandomNumberGenerator.new()
 var theme: Dictionary = Tracks.THEMES[0]
 var seed_v := 0
+var ext_x := 84.0        # terrain half-size (x)
+var ext_z := 84.0        # terrain half-size (z)
+var grid := 1.5
+var gnx := 0
+var map_half := 60.0     # half-size of the track bounds (minimap)
+var rock_h := 14.0
+var snow_h := 19.0
+# hand-traced layouts
+var lay: Dictionary = {}
+var lay_c := Vector2.ZERO
+var lay_s := 1.0
+var forest := PackedVector2Array()
+var lake_c := Vector2.ZERO
+var lake_r := Vector2.ONE
+const FCELL := 6.0
+var fnx := 0
+var fnz := 0
+var f_road := PackedFloat32Array()
+var f_dist := PackedFloat32Array()
+var f_out := PackedFloat32Array()
 
 const TOON := preload("res://shaders/toon.gdshader")
 const OUTLINE := preload("res://shaders/outline.gdshader")
@@ -64,10 +82,16 @@ func _setup_noise(th: Dictionary) -> void:
 	noise.fractal_octaves = 5
 	detail.seed = seed_v + 7
 	detail.frequency = 0.09
+	lay = th.get("layout", {})
+
+func _px(v: Vector2) -> Vector2:
+	return (v - lay_c) * lay_s
 
 func build(th: Dictionary) -> void:
 	_setup_noise(th)
 	_gen_track()
+	if not lay.is_empty():
+		_build_field()
 	_gen_open_sides()
 	_build_terrain()
 	_build_road()
@@ -83,6 +107,8 @@ func build(th: Dictionary) -> void:
 			box_spots.append(Vector3(q.x, TH[k], q.y))
 
 func base_h(x: float, z: float) -> float:
+	if not lay.is_empty():
+		return _lay_h(x, z)
 	var v := noise.get_noise_2d(x, z) * 0.5 + 0.5
 	return (v - float(theme.h_off)) * float(theme.h_scale)
 
@@ -104,6 +130,9 @@ func _smooth(arr: PackedFloat32Array, w: int, passes: int) -> PackedFloat32Array
 	return arr
 
 func _gen_track() -> void:
+	if not lay.is_empty():
+		_gen_track_layout()
+		return
 	var cps: Array[Vector2] = []
 	for i in 12:
 		var a := float(i) / 12.0 * TAU
@@ -143,12 +172,169 @@ func _gen_track() -> void:
 	th = _smooth(th, 10, 3)
 	for k in N:
 		TH[k] = maxf(th[k], WATER + 0.9)
+	_finish_track()
+
+func _finish_track() -> void:
+	var mx := 0.0
+	for k in N:
+		mx = maxf(mx, maxf(absf(P[k].x), absf(P[k].y)))
+	map_half = mx + 8.0
 	# spatial buckets for nearest-sample queries
 	for k in N:
 		var key := Vector2i(floori(P[k].x / BK), floori(P[k].y / BK))
 		if not buckets.has(key):
 			buckets[key] = PackedInt32Array()
 		buckets[key].append(k)
+
+## Track from a hand-traced plan (image pixels) and a height profile along the lap.
+func _gen_track_layout() -> void:
+	var raw: Array = lay.points
+	lay_s = float(lay.scale)
+	var lo := Vector2(INF, INF)
+	var hi := -lo
+	for v: Vector2 in raw:
+		lo = lo.min(v)
+		hi = hi.max(v)
+	lay_c = (lo + hi) * 0.5
+	var cps: Array[Vector2] = []
+	for v: Vector2 in raw:
+		cps.append(_px(v))
+	var n := cps.size()
+	var dense: Array[Vector2] = []
+	for i in n:
+		var p0 := cps[(i + n - 1) % n]
+		var p1 := cps[i]
+		var p2 := cps[(i + 1) % n]
+		var p3 := cps[(i + 2) % n]
+		for st in 60:
+			var t := st / 60.0
+			dense.append(Vector2(_cr(p0.x, p1.x, p2.x, p3.x, t), _cr(p0.y, p1.y, p2.y, p3.y, t)))
+	var cum := PackedFloat32Array([0.0])
+	for i in range(1, dense.size() + 1):
+		cum.append(cum[i - 1] + dense[i - 1].distance_to(dense[i % dense.size()]))
+	var total := cum[cum.size() - 1]
+	N = int(total / SPACING)
+	P.resize(N); T.resize(N); TH.resize(N)
+	var j := 0
+	for k in N:
+		var tg := k * total / N
+		while cum[j + 1] < tg:
+			j += 1
+		var t := (tg - cum[j]) / maxf(0.0001, cum[j + 1] - cum[j])
+		P[k] = dense[j].lerp(dense[(j + 1) % dense.size()], t)
+	# light smoothing rounds off kinks between hand-placed points
+	for _p in 3:
+		var o := PackedVector2Array()
+		o.resize(N)
+		for k in N:
+			var acc := Vector2.ZERO
+			for q in range(-8, 9):
+				acc += P[(k + q + N) % N]
+			o[k] = acc / 17.0
+		P = o
+	for k in N:
+		T[k] = (P[(k + 1) % N] - P[(k - 1 + N) % N]).normalized()
+	# heights from the elevation profile (fraction of lap -> metres)
+	var prof: Array = lay.profile
+	var th := PackedFloat32Array()
+	th.resize(N)
+	var pi := 0
+	for k in N:
+		var f := float(k) / N
+		while pi < prof.size() - 2 and prof[pi + 1].x < f:
+			pi += 1
+		var a: Vector2 = prof[pi]
+		var b: Vector2 = prof[pi + 1]
+		th[k] = lerpf(a.y, b.y, clampf((f - a.x) / maxf(0.0001, b.x - a.x), 0.0, 1.0))
+	th = _smooth(th, 16, 4)
+	var top := 0.0
+	for k in N:
+		TH[k] = maxf(th[k], WATER + 1.0)
+		top = maxf(top, TH[k])
+	rock_h = top + 9.0
+	snow_h = top + 22.0
+	forest = PackedVector2Array()
+	for v: Vector2 in lay.forest:
+		forest.append(_px(v))
+	lake_c = _px(lay.lake[0])
+	lake_r = lay.lake[1] * lay_s
+	_finish_track()
+	var bx := 0.0
+	var bz := 0.0
+	for k in N:
+		bx = maxf(bx, absf(P[k].x))
+		bz = maxf(bz, absf(P[k].y))
+	ext_x = ceilf(bx + 80.0)
+	ext_z = ceilf(bz + 80.0)
+	grid = 2.5
+
+## Coarse height field: road height spread smoothly across the land (inverse
+## distance weighting), distance to the road, and distance outside the forest.
+func _build_field() -> void:
+	fnx = int(2.0 * ext_x / FCELL) + 2
+	fnz = int(2.0 * ext_z / FCELL) + 2
+	f_road.resize(fnx * fnz)
+	f_dist.resize(fnx * fnz)
+	f_out.resize(fnx * fnz)
+	var sp := PackedVector2Array()
+	var sh := PackedFloat32Array()
+	for k in range(0, N, 6):
+		sp.append(P[k])
+		sh.append(TH[k])
+	var m := sp.size()
+	var fc := forest.size()
+	for iz in fnz:
+		for ix in fnx:
+			var q := Vector2(-ext_x + ix * FCELL, -ext_z + iz * FCELL)
+			var ws := 0.0
+			var hs := 0.0
+			var dmin := INF
+			for k in m:
+				var d2 := q.distance_squared_to(sp[k])
+				dmin = minf(dmin, d2)
+				var w := 1.0 / ((d2 + 64.0) * (d2 + 64.0))
+				ws += w
+				hs += w * sh[k]
+			var id := iz * fnx + ix
+			f_road[id] = hs / ws
+			f_dist[id] = sqrt(dmin)
+			# distance outside the forest outline (0 inside)
+			if fc > 2 and not Geometry2D.is_point_in_polygon(q, forest):
+				var e := INF
+				for k in fc:
+					var a := forest[k]
+					var b := forest[(k + 1) % fc]
+					e = minf(e, q.distance_to(Geometry2D.get_closest_point_to_segment(q, a, b)))
+				f_out[id] = e
+			else:
+				f_out[id] = 0.0
+
+func _field(arr: PackedFloat32Array, x: float, z: float) -> float:
+	var fx := (x + ext_x) / FCELL
+	var fz := (z + ext_z) / FCELL
+	var ix := clampi(floori(fx), 0, fnx - 2)
+	var iz := clampi(floori(fz), 0, fnz - 2)
+	var tx := clampf(fx - ix, 0.0, 1.0)
+	var tz := clampf(fz - iz, 0.0, 1.0)
+	return lerpf(lerpf(arr[iz * fnx + ix], arr[iz * fnx + ix + 1], tx),
+		lerpf(arr[(iz + 1) * fnx + ix], arr[(iz + 1) * fnx + ix + 1], tx), tz)
+
+func lake_e(x: float, z: float) -> float:
+	return ((Vector2(x, z) - lake_c) / lake_r).length()
+
+func _lay_h(x: float, z: float) -> float:
+	if f_road.is_empty():
+		return 8.0
+	var road := _field(f_road, x, z)
+	var d := _field(f_dist, x, z)
+	var out := _field(f_out, x, z)
+	var n := noise.get_noise_2d(x, z) * 0.5 + 0.5
+	var h := road - 0.3 + (n - 0.3) * 7.0 * smoothstep(9.0, 45.0, d)
+	# mountains rising past the edge of the forest
+	h += smoothstep(0.0, 75.0, out) * (26.0 + 26.0 * n)
+	h = maxf(h, WATER + 0.9)
+	var bowl := 1.0 - smoothstep(0.75, 1.7, lake_e(x, z))
+	return lerpf(h, WATER - 2.6, bowl)
 
 func _gen_open_sides() -> void:
 	# Leave the fence off only along long stretches beside big lakes.
@@ -255,16 +441,16 @@ func is_open(idx: int, lat: float) -> bool:
 	return open_side[idx * 2 + (1 if lat > 0.0 else 0)] == 1
 
 func terrain_h(x: float, z: float) -> float:
-	var fx := (x + EXT) / GRID
-	var fz := (z + EXT) / GRID
-	var ix := clampi(floori(fx), 0, gn - 2)
+	var fx := (x + ext_x) / grid
+	var fz := (z + ext_z) / grid
+	var ix := clampi(floori(fx), 0, gnx - 2)
 	var iz := clampi(floori(fz), 0, gn - 2)
 	var tx := clampf(fx - ix, 0.0, 1.0)
 	var tz := clampf(fz - iz, 0.0, 1.0)
-	var a := hgrid[iz * gn + ix]
-	var b := hgrid[iz * gn + ix + 1]
-	var c := hgrid[(iz + 1) * gn + ix]
-	var d := hgrid[(iz + 1) * gn + ix + 1]
+	var a := hgrid[iz * gnx + ix]
+	var b := hgrid[iz * gnx + ix + 1]
+	var c := hgrid[(iz + 1) * gnx + ix]
+	var d := hgrid[(iz + 1) * gnx + ix + 1]
 	return lerpf(lerpf(a, b, tx), lerpf(c, d, tx), tz)
 
 ## Ground under a point given its nearest-track info: Vector2(height, surface)
@@ -303,11 +489,12 @@ func _terrain_vertex_h(x: float, z: float) -> float:
 	return lerpf(t0, h, smoothstep(0.0, BLEND, lat - WALL_OUT - 0.4))
 
 func _build_terrain() -> void:
-	gn = int(2.0 * EXT / GRID) + 1
-	hgrid.resize(gn * gn)
+	gnx = int(2.0 * ext_x / grid) + 1
+	gn = int(2.0 * ext_z / grid) + 1
+	hgrid.resize(gnx * gn)
 	for iz in gn:
-		for ix in gn:
-			hgrid[iz * gn + ix] = _terrain_vertex_h(-EXT + ix * GRID, -EXT + iz * GRID)
+		for ix in gnx:
+			hgrid[iz * gnx + ix] = _terrain_vertex_h(-ext_x + ix * grid, -ext_z + iz * grid)
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var grass_a := _c("grass_a")
@@ -316,13 +503,13 @@ func _build_terrain() -> void:
 	var rock := _c("rock")
 	var snow := _c("snow")
 	for iz in gn - 1:
-		for ix in gn - 1:
-			var x0 := -EXT + ix * GRID
-			var z0 := -EXT + iz * GRID
-			var v00 := Vector3(x0, hgrid[iz * gn + ix], z0)
-			var v10 := Vector3(x0 + GRID, hgrid[iz * gn + ix + 1], z0)
-			var v01 := Vector3(x0, hgrid[(iz + 1) * gn + ix], z0 + GRID)
-			var v11 := Vector3(x0 + GRID, hgrid[(iz + 1) * gn + ix + 1], z0 + GRID)
+		for ix in gnx - 1:
+			var x0 := -ext_x + ix * grid
+			var z0 := -ext_z + iz * grid
+			var v00 := Vector3(x0, hgrid[iz * gnx + ix], z0)
+			var v10 := Vector3(x0 + grid, hgrid[iz * gnx + ix + 1], z0)
+			var v01 := Vector3(x0, hgrid[(iz + 1) * gnx + ix], z0 + grid)
+			var v11 := Vector3(x0 + grid, hgrid[(iz + 1) * gnx + ix + 1], z0 + grid)
 			for tri in [[v00, v10, v11], [v00, v11, v01]]:
 				var a: Vector3 = tri[0]
 				var b: Vector3 = tri[1]
@@ -336,10 +523,10 @@ func _build_terrain() -> void:
 				var col: Color
 				if avg < WATER + 0.5:
 					col = sand
-				elif avg > 19.0:
+				elif avg > snow_h:
 					col = snow
-				elif avg > 14.0 or nrm.y < 0.66:
-					col = rock.lerp(snow, clampf((avg - 14.0) / 10.0, 0.0, 0.5))
+				elif avg > rock_h or nrm.y < 0.66:
+					col = rock.lerp(snow, clampf((avg - rock_h) / 10.0, 0.0, 0.5))
 				else:
 					col = grass_a if detail.get_noise_2d(cx, cz) < 0.1 else grass_b
 				_tri_up(st, a, b, c, col)
@@ -353,7 +540,7 @@ func _build_terrain() -> void:
 	# far ground so there's no void past the terrain edge
 	var far := MeshInstance3D.new()
 	var pm := PlaneMesh.new()
-	pm.size = Vector2(900, 900)
+	pm.size = Vector2(1, 1) * maxf(900.0, maxf(ext_x, ext_z) * 4.0)
 	far.mesh = pm
 	far.position.y = -2.0
 	far.material_override = toon(_c("far"))
@@ -464,13 +651,15 @@ func _build_fences() -> void:
 				continue
 			var nrm := Vector2(-T[i].y, T[i].x) * sd
 			var q := P[i] + nrm * FENCE
+			if _in_other_road(q, i):
+				continue
 			var bas := _basis_along(T[i])
 			var hh := 0.95 + rng.randf() * 0.08
 			pickets.append(Transform3D(Basis(bas.x, bas.y * hh, bas.z), Vector3(q.x, TH[i] + hh * 0.5, q.y)))
 			tips.append(Transform3D(bas, Vector3(q.x, TH[i] + hh + 0.09, q.y)))
 			if i % 12 == 0:
 				posts.append(Transform3D(bas, Vector3(q.x, TH[i] + 0.68, q.y)))
-			if open_side[j * 2 + side] == 0:
+			if open_side[j * 2 + side] == 0 and not _in_other_road(P[j] + Vector2(-T[j].y, T[j].x) * sd * FENCE, j):
 				var q2 := P[j] + Vector2(-T[j].y, T[j].x) * sd * FENCE
 				var mid := (q + q2) * 0.5 + nrm * 0.07
 				var seg := q2 - q
@@ -491,11 +680,21 @@ func _build_fences() -> void:
 	_multimesh(postm, posts, toon(_c("post"), false, 0.025), "FencePosts")
 	_multimesh(railm, rails, toon(_c("fence").lerp(_c("post"), 0.45)), "FenceRails")
 
+## True if a point sits on the verge of a different stretch of track (tight
+## hairpins and close parallel sections), so no fence should go there.
+func _in_other_road(q: Vector2, i: int) -> bool:
+	var ng := nearest_global(q, WALL_IN + 0.3)
+	if ng.x < 0:
+		return false
+	var gap := absi(int(ng.x) - i)
+	gap = mini(gap, N - gap)
+	return gap > 30 and absf(ng.y) < WALL_IN + 0.2
+
 # ------------------------------------------------------------------ water
 func _build_water() -> void:
 	var w := MeshInstance3D.new()
 	var pm := PlaneMesh.new()
-	pm.size = Vector2(EXT * 2.0 + 40.0, EXT * 2.0 + 40.0)
+	pm.size = Vector2(ext_x * 2.0 + 40.0, ext_z * 2.0 + 40.0)
 	pm.subdivide_width = 0
 	w.mesh = pm
 	w.position.y = WATER
@@ -515,15 +714,28 @@ func _build_trees() -> void:
 	var bushes: Array[Transform3D] = []
 	var placed := 0
 	var tries := 0
-	while placed < 520 and tries < 6000:
+	var want := 520
+	var lo := Vector2(-ext_x + 3.0, -ext_z + 3.0)
+	var hi := -lo
+	if not lay.is_empty():
+		want = int(lay.get("trees", 1500))
+		lo = Vector2(INF, INF)
+		hi = -lo
+		for v in forest:
+			lo = lo.min(v)
+			hi = hi.max(v)
+	while placed < want and tries < want * 14:
 		tries += 1
-		var x := rng.randf_range(-EXT + 3.0, EXT - 3.0)
-		var z := rng.randf_range(-EXT + 3.0, EXT - 3.0)
-		var nr := nearest_global(Vector2(x, z), WALL_OUT + 3.0)
+		var x := rng.randf_range(lo.x, hi.x)
+		var z := rng.randf_range(lo.y, hi.y)
+		if not lay.is_empty():
+			if not Geometry2D.is_point_in_polygon(Vector2(x, z), forest) or lake_e(x, z) < 1.35:
+				continue
+		var nr := nearest_global(Vector2(x, z), WALL_OUT + (1.6 if not lay.is_empty() else 3.0))
 		if nr.x >= 0:
 			continue
 		var h := terrain_h(x, z)
-		if h < WATER + 0.6 or h > 18.0:
+		if h < WATER + 0.6 or h > rock_h + 4.0:
 			continue
 		placed += 1
 		var s := rng.randf_range(0.8, 1.35)
@@ -570,7 +782,8 @@ func _build_scenery() -> void:
 	var clouds: Array[Transform3D] = []
 	for i in 46:
 		var a := float(i) / 46.0 * TAU + rng.randf() * 0.1
-		var r := rng.randf_range(118.0, 175.0)
+		var r0 := maxf(118.0, maxf(ext_x, ext_z) + 25.0)
+		var r := rng.randf_range(r0, r0 + 57.0)
 		var s := rng.randf_range(16.0, 34.0)
 		var xf := Transform3D(Basis(Vector3.UP, rng.randf() * TAU).scaled(Vector3(s, s * rng.randf_range(0.6, 1.3), s)), Vector3(cos(a) * r, -4.0, sin(a) * r))
 		if i % 3 == 0:
@@ -579,7 +792,7 @@ func _build_scenery() -> void:
 			hills.append(xf)
 	for i in 22:
 		var a := rng.randf() * TAU
-		var r := rng.randf_range(90.0, 170.0)
+		var r := rng.randf_range(90.0, maxf(170.0, maxf(ext_x, ext_z) + 40.0))
 		var y := rng.randf_range(32.0, 52.0)
 		for b in 4:
 			var s := rng.randf_range(4.0, 8.0)
