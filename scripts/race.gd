@@ -130,6 +130,13 @@ func _ready() -> void:
 	if autotest or web_demo:
 		autotest = true
 		begin_mode(mode)
+	elif OS.has_feature("web"):
+		# opened from an invite link: ?join=CODE
+		var jc := str(JavaScriptBridge.eval("new URLSearchParams(location.search).get('join') || ''", true))
+		if jc.length() == 4:
+			JavaScriptBridge.eval("history.replaceState(null, '', location.pathname)", true)
+			net.join(jc)
+			hud.show_screen("lobby")
 
 func save_settings() -> void:
 	settings.set_value("game", "critter", selected)

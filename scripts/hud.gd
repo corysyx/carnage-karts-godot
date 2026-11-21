@@ -973,6 +973,24 @@ var lobby_start: Button
 var lobby_wait: Label
 var lobby_host_box: Control
 var lobby_status: Label
+var lobby_invite: Button
+
+func invite_link() -> String:
+	var base := "https://corysyx.github.io/carnage-karts-godot/"
+	if OS.has_feature("web"):
+		base = str(JavaScriptBridge.eval("location.origin + location.pathname", true))
+	return base + "?join=" + race.net.code
+
+func _copy_invite() -> void:
+	var link := invite_link()
+	Sfx.play("pick", 0.5)
+	if OS.has_feature("web"):
+		# share sheet on phones, clipboard elsewhere
+		JavaScriptBridge.eval("(function(u){if(navigator.share){navigator.share({title:'Carnage Karts',text:'Race me in Carnage Karts!',url:u}).catch(function(){});}else if(navigator.clipboard){navigator.clipboard.writeText(u);}})(" + JSON.stringify(link) + ")", true)
+	else:
+		DisplayServer.clipboard_set(link)
+	lobby_invite.text = "Link ready!"
+	get_tree().create_timer(2.0).timeout.connect(func(): lobby_invite.text = "Copy invite link")
 
 func _build_online() -> void:
 	var o := _overlay()
@@ -1014,6 +1032,28 @@ func _build_online() -> void:
 	hb.add_child(code_edit)
 	hb.add_child(join)
 	vb.add_child(hb)
+	# on-screen letter pad: phone browsers don't open their keyboard for the game
+	var pad := GridContainer.new()
+	pad.columns = 11
+	pad.add_theme_constant_override("h_separation", 5)
+	pad.add_theme_constant_override("v_separation", 5)
+	var keys: Array = Array(Net.CODE_CHARS.split("")) + ["⌫"]
+	for ch in keys:
+		var kb := _button(ch, Color(1, 1, 1, 0.18) if ch != "⌫" else Color("ff4f6e"), 20)
+		kb.custom_minimum_size = Vector2(50, 42)
+		kb.focus_mode = Control.FOCUS_NONE
+		var c: String = ch
+		kb.pressed.connect(func():
+			Sfx.play("get", 0.3)
+			if c == "⌫":
+				code_edit.text = code_edit.text.substr(0, maxi(0, code_edit.text.length() - 1))
+			elif code_edit.text.length() < 4:
+				code_edit.text += c
+			code_edit.caret_column = code_edit.text.length())
+		pad.add_child(kb)
+	var padc := CenterContainer.new()
+	padc.add_child(pad)
+	vb.add_child(padc)
 	online_status = _label("", 18, Color("ffd2a0"), 5)
 	online_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	online_status.custom_minimum_size = Vector2(620, 0)
@@ -1048,8 +1088,11 @@ func _build_lobby() -> void:
 	vb.add_child(pcc)
 	var ch := _button("Change critter", Color("38b6a3"), 20)
 	ch.pressed.connect(func(): Sfx.play("get", 0.4); show_screen("character"))
-	var chc := CenterContainer.new()
+	lobby_invite = _button("Copy invite link", Color("f5a623"), 20)
+	lobby_invite.pressed.connect(_copy_invite)
+	var chc := _hbox(10)
 	chc.add_child(ch)
+	chc.add_child(lobby_invite)
 	vb.add_child(chc)
 	lobby_track = _label("", 22, Color.WHITE, 6)
 	var hv := VBoxContainer.new()
@@ -1131,6 +1174,7 @@ func _refresh_lobby() -> void:
 		if c is Button:
 			c.visible = n.is_host
 	lobby_start.visible = n.is_host and connected
+	lobby_invite.visible = connected and not n.use_enet
 	lobby_wait.visible = connected and not n.is_host
 	lobby_wait.text = "Waiting for the host to start…"
 	if online_status:

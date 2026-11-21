@@ -6,6 +6,8 @@ func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--menushot="):
 			out = a.substr(11)
+		if a.begins_with("--screen="):
+			get_parent().hud.call_deferred("show_screen", a.substr(9))
 	if out == "":
 		queue_free()
 		return
