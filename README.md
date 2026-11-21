@@ -36,9 +36,9 @@ It uses the **Compatibility** renderer so the same project runs on desktop, phon
 3. Everyone can **Change critter** (each player gets a different one). The host picks the track and laps, then taps **Start Race**. AI critters fill the empty places.
 4. After the race the host takes everyone **Back to Lobby** for another go.
 
-How it works: players find each other through the free public PeerJS server (`0.peerjs.com`, used only to swap connection details), then connect directly with WebRTC. The host runs the AI karts and relays everything. Each player drives their own kart on their own device, so steering never lags. Item shots, hits and item-box pickups are sent to everyone. If a friend drops out, an AI critter takes over their kart; if the host leaves, the race ends for everyone.
+How it works: all online traffic goes through a free public MQTT relay (HiveMQ's public broker, over a secure WebSocket), so it works on any network, including phone data. The host runs the AI karts and relays everything. Each player drives their own kart on their own device, so steering never lags. Item shots, hits and item-box pickups are sent to everyone. If a friend drops out, an AI critter takes over their kart; if the host leaves, the race ends for everyone. The lobby's **Copy invite link** shares a link that joins the room directly.
 
-Notes: keep the game tab in front while racing (browsers pause background tabs). Most home and mobile networks connect fine; a few strict networks (some offices and schools) block direct connections. Code: `scripts/net.gd`. To test natively, run one copy with `-- --net-host` and others with `-- --net-join=127.0.0.1` (ENet on port 24680).
+Notes: keep the game tab in front while racing (browsers pause background tabs). Code: `scripts/net.gd`. To test locally, run an MQTT-over-WebSocket broker and start copies with `-- --net-host --relay=ws://127.0.0.1:8888` and `-- --net-join=CODE --relay=ws://127.0.0.1:8888` (or add `--enet` to use ENet on port 24680).
 
 ## Controls
 

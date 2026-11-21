@@ -1054,6 +1054,7 @@ func _build_online() -> void:
 	var padc := CenterContainer.new()
 	padc.add_child(pad)
 	vb.add_child(padc)
+	vb.add_child(_label("Codes never use I, O, 1 or 0, so they can't be mixed up.", 13, Color(1, 1, 1, 0.7), 4))
 	online_status = _label("", 18, Color("ffd2a0"), 5)
 	online_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	online_status.custom_minimum_size = Vector2(620, 0)
@@ -1146,7 +1147,7 @@ func _refresh_lobby() -> void:
 	var n: Net = race.net
 	if n.active and n.lobby_map != race.map_idx and race.state == "menu" and n.players.size() > 0:
 		race.load_map(n.lobby_map)
-	var connected := n.active and (n.is_host and (n.ws_open or n.use_enet) or (not n.is_host and n.players.has(n.my_id)))
+	var connected := n.ready_in_room()
 	if n.is_host:
 		lobby_code.text = ("Room code: " + n.code) if connected else "Opening room…"
 	else:

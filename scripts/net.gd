@@ -2,10 +2,10 @@ class_name Net
 extends Node
 ## Online multiplayer for friends.
 ##
-## Web build: players meet through a public PeerJS signalling server using a
-## 4-letter room code, then connect directly with WebRTC (Godot's built-in
-## WebRTCMultiplayerPeer). The host is the server: clients only talk to it and
-## it relays. Native builds (tests) use ENet instead.
+## Players share a 4-letter room code. All traffic goes through a free public
+## MQTT relay over a secure WebSocket (MqttPeer), so it works on any network.
+## The host is the server: clients only talk to it and it relays.
+## Native test builds can use ENet instead (--enet).
 ##
 ## Who decides what:
 ##  - each player drives their own kart and reports its state (~20 Hz)
@@ -13,12 +13,10 @@ extends Node
 ##  - item use, hits and item-box pickups are sent as reliable events; the
 ##    kart's owner decides whether a projectile hit it
 
-const SIGNAL_URL := "wss://0.peerjs.com/peerjs?key=peerjs"
-const ICE := {"iceServers": [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]}
 const CODE_CHARS := "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 const PREFIX := "carnagekarts-"
 const MAX_PLAYERS := 6
-const SEND_DT := 0.05
+const SEND_DT := 0.066
 
 signal status_changed(text: String)
 signal lobby_changed
@@ -35,17 +33,9 @@ var players := {}
 var lobby_map := 0
 var lobby_laps := 3
 
-var signal_url := SIGNAL_URL
+var broker_url := MqttPeer.DEFAULT_BROKER
 var use_enet := false          # native test transport
-var ws: WebSocketPeer
-var ws_open := false
-var my_sig := ""
-var hb_t := 0.0
-var rtc: WebRTCMultiplayerPeer
-var conns := {}                # net id -> WebRTCPeerConnection
-var sig_of := {}               # net id -> signalling id
-var id_of := {}                # signalling id -> net id
-var next_id := 2
+var relay: MqttPeer
 var join_t := -1.0
 var send_t := 0.0
 var latest := {}               # slot -> PackedFloat32Array (host: last state from clients)
@@ -53,25 +43,33 @@ var rx_t := 0.0                # client: time since the last snapshot from the h
 
 func _ready() -> void:
 	name = "Net"
-	use_enet = not OS.has_feature("web")
+	use_enet = "--enet" in OS.get_cmdline_user_args()
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	multiplayer.connected_to_server.connect(_on_connected)
 	multiplayer.connection_failed.connect(func(): fail("Couldn't connect to that room."))
 	multiplayer.server_disconnected.connect(func(): fail("The host left the game."))
 	for a in OS.get_cmdline_user_args():
-		if a.begins_with("--signal="):
-			signal_url = a.substr(9)
+		if a.begins_with("--relay="):
+			broker_url = a.substr(8)
 	if OS.has_feature("web"):
-		var q := str(JavaScriptBridge.eval("new URLSearchParams(location.search).get('signal') || ''", true))
+		var q := str(JavaScriptBridge.eval("new URLSearchParams(location.search).get('relay') || ''", true))
 		if q != "" and q != "null":
-			signal_url = q
+			broker_url = q
 
 func _set_status(s: String) -> void:
 	if race and race.autotest:
 		print("[net %d] %s" % [my_id, s])
 	status = s
 	status_changed.emit(s)
+
+## In a room and ready (host: room open, client: accepted by the host).
+func ready_in_room() -> bool:
+	if not active:
+		return false
+	if is_host:
+		return use_enet or (relay != null and relay.status == MultiplayerPeer.CONNECTION_CONNECTED)
+	return players.has(my_id)
 
 func my_name() -> String:
 	return "P%d" % _player_no(my_id)
@@ -86,6 +84,27 @@ func name_of(id: int) -> String:
 	return "P%d" % n if n > 0 else "P?"
 
 # ------------------------------------------------------------------ host / join
+func _new_room_code() -> String:
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	var c := ""
+	for i in 4:
+		c += CODE_CHARS[rng.randi() % CODE_CHARS.length()]
+	return c
+
+func _start_relay(room: String, as_host: bool) -> bool:
+	relay = MqttPeer.new()
+	relay.refused.connect(func(why: String):
+		fail("That race has already started. Try again when it's over." if why == "racing" else "That room is full (6 players)."))
+	relay.broker_failed.connect(func():
+		if active:
+			fail("Lost connection to the host." if in_race else "Couldn't reach the online relay. Check your internet connection."))
+	if relay.start(broker_url, room, as_host) != OK:
+		fail("Couldn't reach the online relay.")
+		return false
+	multiplayer.multiplayer_peer = relay
+	return true
+
 func host() -> void:
 	leave()
 	active = true
@@ -102,20 +121,13 @@ func host() -> void:
 			return
 		multiplayer.multiplayer_peer = e
 		code = "LAN"
-		_set_status("Hosting")
+		_set_status("Room open LAN")
 		lobby_changed.emit()
 		return
-	var rng := RandomNumberGenerator.new()
-	rng.randomize()
-	code = ""
-	for i in 4:
-		code += CODE_CHARS[rng.randi() % CODE_CHARS.length()]
-	rtc = WebRTCMultiplayerPeer.new()
-	rtc.create_server()
-	multiplayer.multiplayer_peer = rtc
-	_open_signal(PREFIX + code)
-	_set_status("Opening room…")
-	lobby_changed.emit()
+	code = _new_room_code()
+	if _start_relay(code, true):
+		_set_status("Opening room…")
+		lobby_changed.emit()
 
 func join(room: String) -> void:
 	leave()
@@ -135,26 +147,15 @@ func join(room: String) -> void:
 		fail("Room codes are 4 letters.")
 		return
 	code = room
-	var rng := RandomNumberGenerator.new()
-	rng.randomize()
-	_open_signal(PREFIX + "p" + str(rng.randi()) + str(Time.get_ticks_usec() % 100000))
-	join_t = 0.0
-	_set_status("Looking for room %s…" % code)
+	if _start_relay(code, false):
+		join_t = 0.0
+		_set_status("Looking for room %s…" % code)
 
 func leave() -> void:
-	if ws:
-		ws.close()
-	ws = null
-	ws_open = false
-	for c in conns.values():
-		c.close()
-	conns.clear()
-	sig_of.clear()
-	id_of.clear()
-	next_id = 2
 	if multiplayer.multiplayer_peer and not (multiplayer.multiplayer_peer is OfflineMultiplayerPeer):
 		multiplayer.multiplayer_peer.close()
 	multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
+	relay = null
 	active = false
 	in_race = false
 	is_host = false
@@ -165,45 +166,21 @@ func leave() -> void:
 
 func fail(why: String) -> void:
 	var was_racing := in_race
+	var was_active := active
 	leave()
 	_set_status(why)
-	race.on_net_failed(why, was_racing)
-
-# ------------------------------------------------------------------ signalling
-func _open_signal(id: String) -> void:
-	my_sig = id
-	ws = WebSocketPeer.new()
-	var url := "%s&id=%s&token=%d&version=1.5.4" % [signal_url, id, randi() % 1000000]
-	if not signal_url.contains("?"):
-		url = url.replace("&id=", "?id=")
-	if ws.connect_to_url(url) != OK:
-		fail("Couldn't reach the matchmaking server.")
-
-func _sig_send(dst: String, kind: String, payload: Dictionary) -> void:
-	if ws and ws.get_ready_state() == WebSocketPeer.STATE_OPEN:
-		ws.send_text(JSON.stringify({"type": kind, "dst": dst, "payload": payload}))
+	if was_active:
+		race.on_net_failed(why, was_racing)
 
 func _process(dt: float) -> void:
-	if ws:
-		ws.poll()
-		var st := ws.get_ready_state()
-		if st == WebSocketPeer.STATE_OPEN:
-			hb_t += dt
-			if hb_t > 5.0:
-				hb_t = 0.0
-				ws.send_text("{\"type\":\"HEARTBEAT\"}")
-			while ws and ws.get_available_packet_count() > 0:
-				_on_signal(ws.get_packet().get_string_from_utf8())
-		elif st == WebSocketPeer.STATE_CLOSED:
-			var was_open := ws_open
-			ws = null
-			ws_open = false
-			if not in_race and active and (not was_open or (not is_host and my_id == 0)):
-				fail("Couldn't reach the matchmaking server.")
+	if is_host and relay and status == "Opening room…" and relay.status == MultiplayerPeer.CONNECTION_CONNECTED:
+		_set_status("Room open " + code)
+		lobby_changed.emit()
 	if join_t >= 0.0:
 		join_t += dt
-		if join_t > 12.0:
-			fail("No room called %s. Check the code with your friend." % code)
+		if join_t > 15.0:
+			fail("No room called %s. Check the code, and make sure the host is still in the lobby." % code)
+			return
 	if in_race:
 		rx_t += dt
 		if not is_host and rx_t > 8.0:
@@ -215,99 +192,14 @@ func _process(dt: float) -> void:
 					var id: int = k.net_owner
 					if multiplayer.multiplayer_peer is ENetMultiplayerPeer:
 						(multiplayer.multiplayer_peer as ENetMultiplayerPeer).get_peer(id).peer_disconnect_now()
-					elif rtc and rtc.has_peer(id):
-						rtc.remove_peer(id)
+					elif relay:
+						relay._disconnect_peer(id, true)
 					_on_peer_disconnected(id)
 		send_t += dt
 		if send_t >= SEND_DT:
 			send_t = 0.0
 			_send_states()
 
-func _on_signal(text: String) -> void:
-	var m = JSON.parse_string(text)
-	if typeof(m) != TYPE_DICTIONARY:
-		return
-	var kind: String = m.get("type", "")
-	match kind:
-		"OPEN":
-			ws_open = true
-			if is_host:
-				_set_status("Room open " + code)
-				lobby_changed.emit()
-			else:
-				_sig_send(PREFIX + code, "OFFER", {"k": "join"})
-		"ID-TAKEN":
-			if is_host:
-				host()       # try another code
-			else:
-				join(code)
-		"ERROR":
-			if not ws_open:
-				fail("Matchmaking server error.")
-		"EXPIRE":
-			if not is_host and my_id == 0:
-				fail("No room called %s. Check the code with your friend." % code)
-		"OFFER", "ANSWER", "CANDIDATE":
-			var src: String = m.get("src", "")
-			var p = m.get("payload", {})
-			if typeof(p) == TYPE_DICTIONARY:
-				_on_sig_payload(src, p)
-
-func _on_sig_payload(src: String, p: Dictionary) -> void:
-	var k: String = p.get("k", "")
-	if is_host:
-		if k == "join":
-			if in_race or players.size() + id_of.size() >= MAX_PLAYERS:
-				_sig_send(src, "ANSWER", {"k": "full", "racing": in_race})
-				return
-			var nid := next_id
-			next_id += 1
-			id_of[src] = nid
-			sig_of[nid] = src
-			_sig_send(src, "ANSWER", {"k": "welcome", "id": nid})
-			var c := _new_conn(nid, src)
-			rtc.add_peer(c, nid)
-			c.create_offer()
-			return
-		var nid2: int = id_of.get(src, 0)
-		if nid2 == 0 or not conns.has(nid2):
-			return
-		_apply_rtc(conns[nid2], p)
-	else:
-		if k == "welcome":
-			join_t = -1.0
-			my_id = int(p.id)
-			rtc = WebRTCMultiplayerPeer.new()
-			rtc.create_client(my_id)
-			multiplayer.multiplayer_peer = rtc
-			var c := _new_conn(1, src)
-			rtc.add_peer(c, 1)
-			_set_status("Connecting to room %s…" % code)
-			join_t = 0.0
-			return
-		if k == "full":
-			fail("That race has already started." if p.get("racing", false) else "That room is full.")
-			return
-		if conns.has(1):
-			_apply_rtc(conns[1], p)
-
-func _new_conn(nid: int, sig: String) -> WebRTCPeerConnection:
-	var c := WebRTCPeerConnection.new()
-	c.initialize(ICE)
-	c.session_description_created.connect(func(type: String, sdp: String):
-		c.set_local_description(type, sdp)
-		_sig_send(sig, "OFFER" if type == "offer" else "ANSWER", {"k": "sdp", "type": type, "sdp": sdp}))
-	c.ice_candidate_created.connect(func(mid: String, index: int, cand: String):
-		_sig_send(sig, "CANDIDATE", {"k": "ice", "mid": mid, "index": index, "cand": cand}))
-	conns[nid] = c
-	return c
-
-func _apply_rtc(c: WebRTCPeerConnection, p: Dictionary) -> void:
-	match p.get("k", ""):
-		"sdp":
-			c.set_remote_description(p.type, p.sdp)
-		"ice":
-			c.add_ice_candidate(p.mid, int(p.index), p.cand)
 
 # ------------------------------------------------------------------ connections
 func _on_peer_connected(id: int) -> void:
@@ -326,11 +218,6 @@ func _on_peer_disconnected(id: int) -> void:
 	if not is_host:
 		return
 	players.erase(id)
-	if conns.has(id):
-		conns.erase(id)
-	if sig_of.has(id):
-		id_of.erase(sig_of[id])
-		sig_of.erase(id)
 	if in_race:
 		race.net_player_left(id)
 	else:
@@ -436,6 +323,8 @@ func start() -> void:
 @rpc("authority", "reliable")
 func h_start(map: int, laps: int, roster: Array, diff: int) -> void:
 	in_race = true
+	if relay:
+		relay.refusing = true
 	rx_t = 0.0
 	if race.autotest:
 		print("[net %d] start map=%d laps=%d roster=%s" % [my_id, map, laps, roster])
@@ -451,6 +340,8 @@ func back_to_lobby() -> void:
 @rpc("authority", "reliable")
 func h_to_lobby() -> void:
 	in_race = false
+	if relay:
+		relay.refusing = false
 	race.net_to_lobby()
 	if is_host:
 		_broadcast_lobby()
