@@ -11,8 +11,17 @@ var next := 0
 
 func _ready() -> void:
 	inst = self
+	# Synthesised fallbacks (tools/make_sfx.py), replaced by ElevenLabs recordings
+	# in assets/sfx/el/ where they exist. Several takes of a sound = random pick each time.
 	for n in ["pick", "get", "fire", "splat", "boom", "boing", "beep", "beep_hi", "shield", "boost", "bump", "splash"]:
-		streams[n] = load("res://assets/sfx/%s.wav" % n)
+		var takes: Array = []
+		for i in range(1, 9):
+			var path := "res://assets/sfx/el/%s%d.ogg" % [n, i]
+			if ResourceLoader.exists(path):
+				takes.append(load(path))
+		if takes.is_empty():
+			takes.append(load("res://assets/sfx/%s.wav" % n))
+		streams[n] = takes
 	for i in 10:
 		var p := AudioStreamPlayer.new()
 		add_child(p)
@@ -31,7 +40,7 @@ static func play(n: String, vol := 1.0) -> void:
 		return
 	var p := inst.pool[inst.next]
 	inst.next = (inst.next + 1) % inst.pool.size()
-	p.stream = inst.streams[n]
+	p.stream = inst.streams[n].pick_random()
 	p.volume_db = linear_to_db(clampf(vol, 0.0, 1.0)) - 4.0
 	p.pitch_scale = randf_range(0.95, 1.05)
 	p.play()
