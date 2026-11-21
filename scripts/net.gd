@@ -33,7 +33,7 @@ var players := {}
 var lobby_map := 0
 var lobby_laps := 3
 
-var broker_url := MqttPeer.DEFAULT_BROKER
+var brokers: Array = MqttPeer.BROKERS
 var use_enet := false          # native test transport
 var relay: MqttPeer
 var join_t := -1.0
@@ -51,11 +51,11 @@ func _ready() -> void:
 	multiplayer.server_disconnected.connect(func(): fail("The host left the game."))
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--relay="):
-			broker_url = a.substr(8)
+			brokers = Array(a.substr(8).split(","))
 	if OS.has_feature("web"):
 		var q := str(JavaScriptBridge.eval("new URLSearchParams(location.search).get('relay') || ''", true))
 		if q != "" and q != "null":
-			broker_url = q
+			brokers = Array(q.split(","))
 
 func _set_status(s: String) -> void:
 	if race and race.autotest:
@@ -95,16 +95,25 @@ func _new_room_code() -> String:
 func _start_relay(room: String, as_host: bool) -> bool:
 	relay = MqttPeer.new()
 	relay.debug = race.autotest
-	relay.refused.connect(func(why: String):
-		fail("That race has already started. Try again when it's over." if why == "racing" else "That room is full (6 players)."))
+	relay.refused.connect(_on_refused)
 	relay.broker_failed.connect(func():
 		if active:
 			fail("Lost connection to the host." if in_race else "Couldn't reach the online relay. Check your internet connection."))
-	if relay.start(broker_url, room, as_host) != OK:
+	if relay.start(brokers, room, as_host) != OK:
 		fail("Couldn't reach the online relay.")
 		return false
 	multiplayer.multiplayer_peer = relay
 	return true
+
+func _on_refused(why: String) -> void:
+	if why == "racing":
+		fail("That race has already started. Try again when it's over.")
+	elif why == "version":
+		fail("Your game and the host's are different versions. Both of you refresh the page, then try again.")
+	elif why == "noroom":
+		fail("No room called %s. Check the code, make sure the host is still in the lobby, and try refreshing the page." % code)
+	else:
+		fail("That room is full (6 players).")
 
 func host() -> void:
 	leave()
@@ -179,7 +188,7 @@ func _process(dt: float) -> void:
 		lobby_changed.emit()
 	if join_t >= 0.0:
 		join_t += dt
-		if join_t > 15.0:
+		if join_t > 40.0:
 			fail("No room called %s. Check the code, and make sure the host is still in the lobby." % code)
 			return
 	if in_race:

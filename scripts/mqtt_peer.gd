@@ -8,13 +8,16 @@ extends MultiplayerPeerExtension
 ##         carnagekarts/v2/<ROOM>/all         host -> every client
 ## Payload: [from u32][exclude u32][kind u8][channel u8][mode u8] + data
 
-const DEFAULT_BROKER := "wss://broker.hivemq.com:8884/mqtt"
+## Free public brokers, tried in order. Hosts use the first that answers;
+## joining players look for the room on each in turn.
+const BROKERS := ["wss://broker.emqx.io:8084/mqtt", "wss://test.mosquitto.org:8081/mqtt", "wss://broker.hivemq.com:8884/mqtt"]
 const ROOT := "carnagekarts/v2/"
 enum Kind { DATA, HELLO, WELCOME, BYE, PING, FULL }
 const PING_EVERY := 1.0
+const VERSION := 3          # bump when the online protocol changes
 const TIMEOUT := 7.0
 
-signal refused(reason: String)
+signal refused(reason: String)   # "full", "racing" or "noroom"
 signal broker_failed
 
 var ws := WebSocketPeer.new()
@@ -37,24 +40,50 @@ var hello_t := 0.0
 var ping_t := 0.0
 var keep_t := 0.0
 var start_ms := 0
+var brokers: Array = []
+var bi := 0
+var sub_ms := 0
 var last_ms := 0
 
-func start(broker: String, room_code: String, as_server: bool) -> Error:
+func start(broker_list: Array, room_code: String, as_server: bool) -> Error:
 	room = room_code
 	server = as_server
 	if server:
 		my_id = 1
 	else:
 		my_id = 2 + (randi() % 2000000000)
+	brokers = broker_list
+	status = MultiplayerPeer.CONNECTION_CONNECTING
+	return _try(0)
+
+func _try(i: int) -> Error:
+	bi = i
+	if ws.get_ready_state() != WebSocketPeer.STATE_CLOSED:
+		ws.close()
+	ws = WebSocketPeer.new()
 	ws.supported_protocols = PackedStringArray(["mqtt"])
 	ws.inbound_buffer_size = 1 << 20
 	ws.outbound_buffer_size = 1 << 20
-	var err := ws.connect_to_url(broker)
-	if err != OK:
-		return err
-	status = MultiplayerPeer.CONNECTION_CONNECTING
+	mqtt_up = false
+	sub_ok = false
+	keep_t = 0.0
+	hello_t = 0.0
+	rx = PackedByteArray()
 	start_ms = Time.get_ticks_msec()
-	return OK
+	_dbg("trying " + str(brokers[i]))
+	return ws.connect_to_url(brokers[i])
+
+## This broker didn't work out (or the room isn't on it): try the next one.
+func _next(why: String) -> void:
+	_dbg("broker %d: %s" % [bi, why])
+	if bi + 1 < brokers.size():
+		_try(bi + 1)
+	elif why == "noroom":
+		ws.close()
+		status = MultiplayerPeer.CONNECTION_DISCONNECTED
+		refused.emit("noroom")
+	else:
+		_fail()
 
 func _topic(id: Variant) -> String:
 	return ROOT + room + "/" + str(id)
@@ -137,15 +166,18 @@ func _read_mqtt() -> void:
 				_dbg("connack %s" % body)
 				if body.size() >= 2 and body[1] == 0:
 					mqtt_up = true
+					_dbg("connected to " + str(brokers[bi]))
 					var subs := [_topic(my_id)]
 					if not server:
 						subs.append(_topic("all"))
 					_subscribe(subs)
 				else:
-					_fail()
+					_next("refused")
+					return
 			0x90:   # SUBACK
 				_dbg("suback")
 				sub_ok = true
+				sub_ms = Time.get_ticks_msec()
 				if server:
 					status = MultiplayerPeer.CONNECTION_CONNECTED
 				else:
@@ -170,8 +202,9 @@ func _on_payload(p: PackedByteArray) -> void:
 			if peers.has(from):
 				_send(from, Kind.WELCOME)
 				return
-			if refusing or peers.size() + 1 >= max_peers:
-				var why := PackedByteArray([1 if refusing else 0])
+			var their_v: int = p[11] if p.size() > 11 else 0
+			if their_v != VERSION or refusing or peers.size() + 1 >= max_peers:
+				var why := PackedByteArray([2 if their_v != VERSION else (1 if refusing else 0)])
 				_send(from, Kind.FULL, why)
 				return
 			peers[from] = 0.0
@@ -195,7 +228,8 @@ func _on_payload(p: PackedByteArray) -> void:
 				peer_connected.emit(1)
 			return
 		if kind == Kind.FULL:
-			refused.emit("racing" if p.size() > 11 and p[11] == 1 else "full")
+			var code: int = p[11] if p.size() > 11 else 0
+			refused.emit(["full", "racing", "version"][clampi(code, 0, 2)])
 			_fail()
 			return
 		if not peers.has(1):
@@ -238,21 +272,25 @@ func _poll() -> void:
 		_read_mqtt()
 	elif st == WebSocketPeer.STATE_CLOSED:
 		_dbg("socket closed code %d reason '%s'" % [ws.get_close_code(), ws.get_close_reason()])
-		if status != MultiplayerPeer.CONNECTION_DISCONNECTED:
+		if status == MultiplayerPeer.CONNECTION_CONNECTING:
+			_next("closed")
+		elif status != MultiplayerPeer.CONNECTION_DISCONNECTED:
 			if server:
 				for id in peers.keys():
 					peer_disconnected.emit(id)
 				peers.clear()
 				status = MultiplayerPeer.CONNECTION_DISCONNECTED
 				broker_failed.emit()
-			elif status == MultiplayerPeer.CONNECTION_CONNECTED:
-				_lost_server()
 			else:
-				_fail()
+				_lost_server()
 		return
-	if status == MultiplayerPeer.CONNECTION_CONNECTING and Time.get_ticks_msec() - start_ms > 15000:
-		_fail()
-		return
+	if status == MultiplayerPeer.CONNECTION_CONNECTING:
+		if not sub_ok and Time.get_ticks_msec() - start_ms > 6000:
+			_next("timeout")
+			return
+		if sub_ok and not server and Time.get_ticks_msec() - sub_ms > 5500:
+			_next("noroom")
+			return
 	var now := Time.get_ticks_msec()
 	var dt := clampf((now - last_ms) / 1000.0, 0.0, 0.5) if last_ms > 0 else 0.0
 	last_ms = now
@@ -266,7 +304,7 @@ func _poll() -> void:
 		hello_t += dt
 		if hello_t > 1.0:
 			hello_t = 0.0
-			_send(1, Kind.HELLO)
+			_send(1, Kind.HELLO, PackedByteArray([VERSION]))
 		return
 	ping_t += dt
 	if ping_t >= PING_EVERY:
