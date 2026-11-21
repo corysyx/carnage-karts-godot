@@ -221,6 +221,8 @@ func show_screen(n: String, remember := true) -> void:
 		_refresh_maps()
 	if n == "character":
 		_refresh_char()
+	if n == "lobby":
+		_refresh_lobby()
 
 func go_back() -> void:
 	Sfx.play("get", 0.4)
@@ -237,6 +239,8 @@ func _build_menus() -> void:
 	_build_character()
 	_build_maps()
 	_build_settings()
+	_build_online()
+	_build_lobby()
 	show_screen("title", false)
 
 func _build_title() -> void:
@@ -249,7 +253,7 @@ func _build_title() -> void:
 	vb.add_child(title)
 	vb.add_child(_label("Six cute critters. Very messy finishes.", 20, Color.WHITE, 6))
 	vb.add_child(Control.new())
-	for item in [["Play", Color("ff4f8b"), func(): show_screen("mode")], ["Settings", Color("6c5ce7"), func(): show_screen("settings")]]:
+	for item in [["Play", Color("ff4f8b"), func(): show_screen("mode")], ["Play Online", Color("f5a623"), func(): show_screen("online")], ["Settings", Color("6c5ce7"), func(): show_screen("settings")]]:
 		var b := _button(item[0], item[1], 32)
 		b.custom_minimum_size = Vector2(300, 66)
 		b.pressed.connect(item[2])
@@ -347,7 +351,14 @@ func _build_character() -> void:
 	back.pressed.connect(go_back)
 	var nxt := _button("Next", Color("ff4f8b"), 26)
 	nxt.custom_minimum_size = Vector2(160, 0)
-	nxt.pressed.connect(func(): Sfx.play("pick", 0.5); show_screen("map"))
+	nxt.pressed.connect(func():
+		Sfx.play("pick", 0.5)
+		if race.net.active:
+			race.net.pick(race.selected)
+			history.clear()
+			show_screen("lobby", false)
+		else:
+			show_screen("map"))
 	hb.add_child(back)
 	hb.add_child(nxt)
 	vb.add_child(hb)
@@ -507,6 +518,9 @@ func on_race_start() -> void:
 	screen_blood.clear()
 
 func to_menu() -> void:
+	if race.net.active:
+		race.net.leave()
+	race.net_roster = []
 	race.state = "menu"
 	race.paused = false
 	results.visible = false
@@ -548,6 +562,7 @@ func _build_pause() -> void:
 	var res := _button("Resume")
 	res.pressed.connect(func(): race.toggle_pause())
 	var quit := _button("Quit to Menu", Color("6c5ce7"))
+	pause_panel.set_meta("quit", quit)
 	quit.pressed.connect(func(): race.paused = false; pause_panel.visible = false; to_menu())
 	hb.add_child(res)
 	hb.add_child(quit)
@@ -604,7 +619,15 @@ func show_results() -> void:
 			_res_row(["#", "Racer", "Time", "Splats" if race.gore_level > 0 else "Bonks"], Color(1, 1, 1, 0.7), 16)
 			for i in rows.size():
 				var k: Kart = rows[i].k
-				_res_row([ordinal(i + 1), k.sp.name + (" (you)" if k.is_player else ""), fmt(rows[i].t) + (" *" if rows[i].est else ""), k.kills], YELLOW if k.is_player else Color.WHITE)
+				_res_row([ordinal(i + 1), k.sp.name + (" (you)" if k.is_player else (" (%s)" % race.net.name_of(k.net_owner) if k.net_owner != 0 else "")), fmt(rows[i].t) + (" *" if rows[i].est else ""), k.kills], YELLOW if k.is_player else Color.WHITE)
+			if race.online():
+				if race.net.is_host:
+					_res_button("Back to Lobby", Color("ff4f8b"), func(): race.net.back_to_lobby())
+				else:
+					res_buttons.add_child(_label("Waiting for the host…", 20, Color.WHITE, 6))
+				_res_button("Leave", Color("6c5ce7"), func(): to_menu())
+				results.visible = true
+				return
 			_res_button("Race Again", Color("ff4f8b"), func(): results.visible = false; race.start_race())
 			_res_button("Change Track", Color("38b6a3"), func(): results.visible = false; race.state = "menu"; show_screen("map", false))
 			_res_button("Main Menu", Color("6c5ce7"), func(): to_menu())
@@ -939,3 +962,184 @@ func _process(dt: float) -> void:
 		for d in s.drips:
 			d.len += d.sp * dt
 	screen_blood = screen_blood.filter(func(s): return s.life > 0.0)
+
+# ------------------------------------------------------------------ online
+var online_status: Label
+var code_edit: LineEdit
+var lobby_code: Label
+var lobby_list: Label
+var lobby_track: Label
+var lobby_start: Button
+var lobby_wait: Label
+var lobby_host_box: Control
+var lobby_status: Label
+
+func _build_online() -> void:
+	var o := _overlay()
+	screens["online"] = o
+	var vb: VBoxContainer = o.get_meta("vb")
+	vb.add_child(_label("Play Online", 46, YELLOW, 14))
+	vb.add_child(_label("Race your friends. One of you hosts, the rest join with the room code.\nEmpty places are filled by AI critters (up to 6 racers).", 16, Color.WHITE, 5))
+	var host := _button("Host a game", Color("ff4f8b"), 28)
+	host.custom_minimum_size = Vector2(300, 60)
+	host.pressed.connect(func():
+		Sfx.play("pick", 0.5)
+		race.net.host()
+		show_screen("lobby"))
+	var cc := CenterContainer.new()
+	cc.add_child(host)
+	vb.add_child(cc)
+	vb.add_child(_label("or join a friend", 18, Color(1, 1, 1, 0.8), 5))
+	var hb := _hbox(10)
+	code_edit = LineEdit.new()
+	code_edit.placeholder_text = "CODE"
+	code_edit.max_length = 4
+	code_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	code_edit.custom_minimum_size = Vector2(170, 56)
+	code_edit.add_theme_font_size_override("font_size", 30)
+	code_edit.add_theme_stylebox_override("normal", _style(Color(1, 1, 1, 0.92), 14, Color("2a1830")))
+	code_edit.add_theme_stylebox_override("focus", _style(Color.WHITE, 14, Color("ff4f8b")))
+	code_edit.add_theme_color_override("font_color", Color("2a1830"))
+	code_edit.add_theme_color_override("font_placeholder_color", Color(0.16, 0.09, 0.19, 0.35))
+	code_edit.text_changed.connect(func(t: String):
+		var up := t.to_upper()
+		if up != t:
+			var c := code_edit.caret_column
+			code_edit.text = up
+			code_edit.caret_column = c)
+	code_edit.text_submitted.connect(func(_t): _do_join())
+	var join := _button("Join", Color("38b6a3"), 26)
+	join.custom_minimum_size = Vector2(130, 56)
+	join.pressed.connect(_do_join)
+	hb.add_child(code_edit)
+	hb.add_child(join)
+	vb.add_child(hb)
+	online_status = _label("", 18, Color("ffd2a0"), 5)
+	online_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	online_status.custom_minimum_size = Vector2(620, 0)
+	vb.add_child(online_status)
+	_back_button(vb)
+
+func _do_join() -> void:
+	if code_edit.text.strip_edges().length() < 4 and OS.has_feature("web"):
+		online_status.text = "Type the 4-letter room code your friend sees."
+		return
+	Sfx.play("pick", 0.5)
+	race.net.join(code_edit.text)
+	show_screen("lobby")
+
+func _build_lobby() -> void:
+	var o := _overlay()
+	screens["lobby"] = o
+	var vb: VBoxContainer = o.get_meta("vb")
+	lobby_code = _label("", 44, YELLOW, 14)
+	vb.add_child(lobby_code)
+	lobby_status = _label("", 17, Color(1, 1, 1, 0.85), 5)
+	lobby_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lobby_status.custom_minimum_size = Vector2(640, 0)
+	vb.add_child(lobby_status)
+	var pc := PanelContainer.new()
+	pc.add_theme_stylebox_override("panel", _style(Color(0, 0, 0, 0.35), 16, Color(1, 1, 1, 0.15)))
+	lobby_list = _label("", 22, Color.WHITE, 6)
+	lobby_list.custom_minimum_size = Vector2(360, 0)
+	pc.add_child(lobby_list)
+	var pcc := CenterContainer.new()
+	pcc.add_child(pc)
+	vb.add_child(pcc)
+	var ch := _button("Change critter", Color("38b6a3"), 20)
+	ch.pressed.connect(func(): Sfx.play("get", 0.4); show_screen("character"))
+	var chc := CenterContainer.new()
+	chc.add_child(ch)
+	vb.add_child(chc)
+	lobby_track = _label("", 22, Color.WHITE, 6)
+	var hv := VBoxContainer.new()
+	hv.add_theme_constant_override("separation", 8)
+	var th := _hbox(10)
+	var prev := _button("◀", Color("6c5ce7"), 22)
+	prev.pressed.connect(func(): _lobby_track(-1, 0))
+	var nx := _button("▶", Color("6c5ce7"), 22)
+	nx.pressed.connect(func(): _lobby_track(1, 0))
+	var lm := _button("− lap", Color("6c5ce7"), 18)
+	lm.pressed.connect(func(): _lobby_track(0, -1))
+	var lp := _button("+ lap", Color("6c5ce7"), 18)
+	lp.pressed.connect(func(): _lobby_track(0, 1))
+	th.add_child(prev)
+	th.add_child(lobby_track)
+	th.add_child(nx)
+	th.add_child(lm)
+	th.add_child(lp)
+	hv.add_child(th)
+	lobby_host_box = hv
+	vb.add_child(hv)
+	lobby_wait = _label("", 22, Color.WHITE, 6)
+	vb.add_child(lobby_wait)
+	var hb := _hbox(12)
+	var leave := _button("Leave", Color("6c5ce7"), 22)
+	leave.pressed.connect(func():
+		race.net.leave()
+		history.clear()
+		show_screen("online", false))
+	lobby_start = _button("Start Race", Color("ff4f8b"), 30)
+	lobby_start.custom_minimum_size = Vector2(260, 62)
+	lobby_start.pressed.connect(func(): race.net.start())
+	hb.add_child(leave)
+	hb.add_child(lobby_start)
+	vb.add_child(hb)
+	race.net.lobby_changed.connect(_refresh_lobby)
+	race.net.status_changed.connect(func(_t): _refresh_lobby())
+
+func _lobby_track(dm: int, dl: int) -> void:
+	var n: Net = race.net
+	if not n.is_host:
+		return
+	Sfx.play("get", 0.4)
+	var m := (n.lobby_map + dm + Tracks.THEMES.size()) % Tracks.THEMES.size()
+	var l := clampi(n.lobby_laps + dl, 1, 5)
+	n.set_track(m, l)
+
+func _refresh_lobby() -> void:
+	if lobby_code == null:
+		return
+	var n: Net = race.net
+	if n.active and n.lobby_map != race.map_idx and race.state == "menu" and n.players.size() > 0:
+		race.load_map(n.lobby_map)
+	var connected := n.active and (n.is_host and (n.ws_open or n.use_enet) or (not n.is_host and n.players.has(n.my_id)))
+	if n.is_host:
+		lobby_code.text = ("Room code: " + n.code) if connected else "Opening room…"
+	else:
+		lobby_code.text = ("Room " + n.code) if connected else ("Joining " + n.code + "…")
+	if not n.active:
+		lobby_code.text = "Not connected"
+	var stat := n.status
+	if n.is_host and connected:
+		stat = "Tell your friends to open the game, tap Play Online and type " + n.code + "." if n.players.size() < 2 else "%d players in the room." % n.players.size()
+	lobby_status.text = stat
+	var ids := n.players.keys()
+	ids.sort()
+	var lines := []
+	for id in ids:
+		var sp: Dictionary = Critters.SPECIES[n.players[id].sp]
+		lines.append("%s  %s%s%s" % [n.name_of(id), sp.name, "  (host)" if id == 1 else "", "  ← you" if id == n.my_id else ""])
+	var free := 6 - ids.size()
+	if ids.size() > 0 and free > 0:
+		lines.append("+ %d AI critter%s" % [free, "" if free == 1 else "s"])
+	lobby_list.text = "\n".join(lines) if lines.size() > 0 else "…"
+	var th: Dictionary = Tracks.THEMES[n.lobby_map]
+	lobby_track.text = "%s · %d lap%s" % [th.name, n.lobby_laps, "" if n.lobby_laps == 1 else "s"]
+	lobby_host_box.visible = connected
+	for c in lobby_host_box.get_child(0).get_children():
+		if c is Button:
+			c.visible = n.is_host
+	lobby_start.visible = n.is_host and connected
+	lobby_wait.visible = connected and not n.is_host
+	lobby_wait.text = "Waiting for the host to start…"
+	if online_status:
+		online_status.text = "" if n.active else n.status
+
+func on_net_status(why: String) -> void:
+	if online_status:
+		online_status.text = why
+	if cur_screen == "lobby" or race.state == "menu":
+		history.clear()
+		show_screen("online", false)
+		online_status.text = why

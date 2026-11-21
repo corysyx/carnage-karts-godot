@@ -58,6 +58,10 @@ var gp_points := [0, 0, 0, 0, 0, 0]      # by species index
 var gp_last: Array = []                   # last race: [{sp_idx, place, pts}]
 var tt_record := false
 var menu_view := "orbit"                  # "orbit" (track) or "garage" (character showcase)
+var net: Net
+var net_roster: Array = []                 # online: [[sp_idx, owner net id], ...] per grid slot
+var net_diff := 1
+var pid_n := 0
 
 func _ready() -> void:
 	randomize()
@@ -70,6 +74,9 @@ func _ready() -> void:
 	Env.setup(self)
 	Env.set_shadows(settings.get_value("video", "shadows", true))
 	add_child(Sfx.new())
+	net = Net.new()
+	net.race = self
+	add_child(net)
 	Sfx.volume = settings.get_value("audio", "volume", 1.0)
 	gore = Gore.new()
 	add_child(gore)
@@ -92,7 +99,35 @@ func _ready() -> void:
 			load_map(int(arg.substr(6)))
 		if arg.begins_with("--mode="):
 			mode = arg.substr(7)
-	if "--autotest" in OS.get_cmdline_user_args() or web_demo:
+	var uargs := OS.get_cmdline_user_args()
+	if not OS.has_feature("web"):
+		for a in uargs:
+			if a.begins_with("--menushot="):
+				add_child(load("res://tools/lobbyshot.gd").new())
+	if OS.has_feature("web"):
+		# test hooks: ?nettest=host or ?nettest=JOINCODE (runs AI-driven, logs to console)
+		var nt := str(JavaScriptBridge.eval("new URLSearchParams(location.search).get('nettest') || ''", true))
+		if nt != "" and nt != "null":
+			uargs = ["--autotest", "--net-host" if nt == "host" else "--net-join=" + nt]
+			Env.set_shadows(false)
+			hud.set_aa(false)
+			hud.set_crt(false)
+			get_viewport().scaling_3d_scale = 0.4
+			var mp := str(JavaScriptBridge.eval("new URLSearchParams(location.search).get('map') || ''", true))
+			if mp != "" and mp != "null":
+				load_map(int(mp))
+	if "--autotest" in uargs:
+		autotest = true
+	for arg in uargs:
+		if arg == "--net-host":
+			net.host()
+			hud.show_screen("lobby")
+			return
+		if arg.begins_with("--net-join="):
+			net.join(arg.substr(11))
+			hud.show_screen("lobby")
+			return
+	if autotest or web_demo:
 		autotest = true
 		begin_mode(mode)
 
@@ -137,6 +172,15 @@ func load_map(i: int) -> void:
 	loaded_map = map_idx
 	_spawn_racers(true)
 
+func online() -> bool:
+	return net != null and net.in_race
+
+func kart_by_slot(i: int) -> Kart:
+	for k in racers:
+		if k.idx == i:
+			return k
+	return null
+
 func theme() -> Dictionary:
 	return Tracks.THEMES[map_idx]
 
@@ -151,6 +195,9 @@ func _spawn_racers(menu: bool) -> void:
 		if i != selected:
 			others.append(i)
 	others.shuffle()
+	if not menu and online():
+		_spawn_online()
+		return
 	var solo := mode == "tt" and not menu
 	for slot in 6:
 		var is_p := slot == 5
@@ -171,6 +218,67 @@ func _spawn_racers(menu: bool) -> void:
 		order[i].rank = i
 	if not menu:
 		cam_a = player.a
+
+func _spawn_online() -> void:
+	for slot in 6:
+		var sp_i: int = net_roster[slot][0]
+		var owner: int = net_roster[slot][1]
+		var mine := owner == net.my_id
+		var k := Kart.new()
+		add_child(k)
+		k.setup(self, world, Critters.SPECIES[sp_i], mine, slot)
+		k.net_owner = owner
+		k.puppet = not (mine or (owner == 0 and net.is_host))
+		k.place_on_grid((world.N - 5 - slot * 4 + world.N) % world.N, 1.75 if slot % 2 else -1.75)
+		racers.append(k)
+		if mine:
+			player = k
+	order = racers.duplicate()
+	for i in order.size():
+		order[i].rank = i
+	cam_a = player.a
+
+## Online: the host started a race.
+func start_online(map: int, n_laps: int, roster: Array, diff: int) -> void:
+	paused = false
+	hud.show_pause(false)
+	mode = "quick"
+	laps = n_laps
+	net_diff = diff
+	net_roster = roster
+	load_map(map)
+	start_race()
+
+## Online: the host went back to the lobby.
+func net_to_lobby() -> void:
+	state = "menu"
+	paused = false
+	hud.results.visible = false
+	hud.show_pause(false)
+	for p in projectiles:
+		p.node.queue_free()
+	projectiles.clear()
+	gore.reset()
+	_spawn_racers(true)
+	hud.show_screen("lobby", false)
+
+## Online: a friend dropped out mid-race; the host's AI takes their kart.
+func net_player_left(id: int) -> void:
+	for k in racers:
+		if k.net_owner == id:
+			k.net_owner = 0
+			k.puppet = false
+			k.has_net = false
+			k.nr = world.nearest_local(k.pos, k.seg, 10)
+			k.half = k.seg > world.N * 0.4
+			k.vz = 0.0
+			msg(net.name_of(id) + " left. A critter took the wheel.", Color("9fe3ff"))
+
+func on_net_failed(why: String, was_racing: bool) -> void:
+	if was_racing or state != "menu":
+		hud.to_menu()
+		msg(why, Color("ff8a9a"), 4.0)
+	hud.on_net_status(why)
 
 func _build_boxes() -> void:
 	var bm := BoxMesh.new()
@@ -221,6 +329,8 @@ func start_race() -> void:
 	msgs.clear()
 	finish_count = 0
 	tt_record = false
+	if online():
+		Sfx.play("get")
 	_spawn_racers(false)
 	state = "countdown"
 	cd = 3.99
@@ -295,6 +405,10 @@ func _unhandled_input(e: InputEvent) -> void:
 func toggle_pause() -> void:
 	if state != "countdown" and state != "race" and state != "finished":
 		return
+	if online():
+		# the race keeps going online; the menu just overlays it
+		hud.show_pause(not hud.pause_panel.visible)
+		return
 	paused = not paused
 	hud.show_pause(paused)
 
@@ -350,6 +464,16 @@ func use_item(k: Kart, aim_d: int) -> void:
 	k.item_held = 0.0
 	if k.items[1 - si] != null:
 		k.sel = 1 - si
+	_fire(k, it, aim_d, null, -1)
+
+## Fire an item from a kart. Online, the kart's owner fires it and sends the
+## same shot to everyone (net_item), who replay it from the same spot.
+func _fire(k: Kart, it: String, aim_d: int, forced_target: Kart, pid: int) -> void:
+	var remote := pid >= 0
+	if not remote:
+		pid_n += 1
+		pid = (net.my_id if online() else 0) * 100000 + pid_n
+	var target_slot := -1
 	var f := k.forward()
 	var back := aim_d < 0 or (aim_d == 0 and (it == "mine" or it == "slime"))
 	var sg := -1.0 if back else 1.0
@@ -358,23 +482,26 @@ func use_item(k: Kart, aim_d: int) -> void:
 	var loud := k.is_player or vol_at(k.pos) > 0.3
 	match it:
 		"rocket":
-			var target: Kart = null
-			if back:
+			var target: Kart = forced_target
+			if remote:
+				pass
+			elif back:
 				var behind := order.filter(func(o): return o.rank > k.rank and o.ko <= 0.0 and not o.finished)
 				target = behind[0] if behind.size() > 0 else null
 			else:
 				var ahead := order.filter(func(o): return o.rank < k.rank and o.ko <= 0.0 and not o.finished)
 				target = ahead[ahead.size() - 1] if ahead.size() > 0 else null
-			_spawn_proj("rocket", k.pos + f * 1.5 * sg, k.z + 0.75, fa, fwd_v + 28.75, k, 7.0, {"target": target, "dir": int(sg), "seg": k.seg})
+			target_slot = target.idx if target else -1
+			_spawn_proj("rocket", k.pos + f * 1.5 * sg, k.z + 0.75, fa, fwd_v + 28.75, k, 7.0, {"target": target, "dir": int(sg), "seg": k.seg, "pid": pid})
 			if loud: Sfx.play("fire")
 		"saw":
-			_spawn_proj("saw", k.pos + f * 1.5 * sg, k.z + 0.5, fa, fwd_v + 25.0, k, 4.5, {})
+			_spawn_proj("saw", k.pos + f * 1.5 * sg, k.z + 0.5, fa, fwd_v + 25.0, k, 4.5, {"pid": pid})
 			if loud: Sfx.play("fire")
 		"mine", "slime":
 			if back:
-				_spawn_proj(it, k.pos - f * 2.0, k.z, 0.0, 0.0, k, 45.0 if it == "mine" else 35.0, {})
+				_spawn_proj(it, k.pos - f * 2.0, k.z, 0.0, 0.0, k, 45.0 if it == "mine" else 35.0, {"pid": pid})
 			else:
-				_spawn_proj(it, k.pos + f * 1.5, k.z + 0.5, k.a, maxf(k.speed, 0.0) + 13.75, k, 45.0 if it == "mine" else 35.0, {"fly": 0.55})
+				_spawn_proj(it, k.pos + f * 1.5, k.z + 0.5, k.a, maxf(k.speed, 0.0) + 13.75, k, 45.0 if it == "mine" else 35.0, {"fly": 0.55, "pid": pid})
 			if k.is_player: Sfx.play("bump")
 		"boost":
 			k.boost = 2.2
@@ -382,6 +509,54 @@ func use_item(k: Kart, aim_d: int) -> void:
 		"shield":
 			k.shield = 10.0
 			if k.is_player: Sfx.play("shield")
+	if online() and not remote:
+		net.send_item([k.idx, it, aim_d, k.pos.x, k.pos.y, k.z, k.a, k.speed, target_slot, pid])
+
+func net_item(args: Array) -> void:
+	var k := kart_by_slot(int(args[0]))
+	if k == null:
+		return
+	k.pos = Vector2(args[3], args[4])
+	k.z = args[5]
+	k.a = args[6]
+	k.speed = args[7]
+	_fire(k, args[1], int(args[2]), kart_by_slot(int(args[8])), int(args[9]))
+
+func _proj_by_pid(pid: int) -> Dictionary:
+	for p in projectiles:
+		if int(p.get("pid", -1)) == pid:
+			return p
+	return {}
+
+## Online: someone's kart was hit by a projectile.
+func net_hit(args: Array) -> void:
+	var k := kart_by_slot(int(args[0]))
+	if k == null:
+		return
+	var p := _proj_by_pid(int(args[1]))
+	if p.is_empty():
+		p = {"type": args[2], "owner": kart_by_slot(int(args[3])), "a": float(args[4])}
+	else:
+		p.life = 0.0
+		p.hit = true
+	hit_kart(k, p, true)
+
+func net_box(i: int) -> void:
+	if i >= 0 and i < boxes.size() and boxes[i].active:
+		var b: Dictionary = boxes[i]
+		b.active = false
+		b.t = 3.0
+		b.node.visible = false
+		gore.sparkle(b.pos, 16)
+
+func net_kill(a: int, b: int) -> void:
+	for pid in [a, b]:
+		var p := _proj_by_pid(pid)
+		if not p.is_empty():
+			if pid == b:
+				gore.explosion(Vector3(p.pos.x, p.y + 0.3, p.pos.y), 14)
+			p.life = 0.0
+			p.hit = true
 
 func _spawn_proj(type: String, p: Vector2, y: float, ang: float, spd: float, owner: Kart, life: float, extra: Dictionary) -> void:
 	var node := ItemModels.build(type)
@@ -390,9 +565,12 @@ func _spawn_proj(type: String, p: Vector2, y: float, ang: float, spd: float, own
 	d.merge(extra, true)
 	projectiles.append(d)
 
-func hit_kart(k: Kart, p: Dictionary) -> bool:
-	if k.invuln > 0.0 or k.ko > 0.0:
+func hit_kart(k: Kart, p: Dictionary, forced := false) -> bool:
+	if not forced and (k.invuln > 0.0 or k.ko > 0.0):
 		return false
+	if online() and not forced:
+		var by: Kart = p.get("owner")
+		net.send_hit([k.idx, int(p.get("pid", -1)), p.type, by.idx if by else -1, float(p.a)])
 	if k.shield > 0.0:
 		k.shield = 0.0
 		gore.sparkle(Vector3(k.pos.x, k.z + 1.0, k.pos.y), 24, [Color("b4ebff"), Color.WHITE])
@@ -401,7 +579,8 @@ func hit_kart(k: Kart, p: Dictionary) -> bool:
 			msg("Blocked!", Color("9fe3ff"))
 		return true
 	if p.type == "slime":
-		k.spin = 1.1
+		if not k.puppet:
+			k.spin = 1.1
 		if k.is_player:
 			Sfx.play("boing")
 			msg("Slimed!", Color("a6ff7a"))
@@ -412,7 +591,8 @@ func hit_kart(k: Kart, p: Dictionary) -> bool:
 	return true
 
 func splat_kart(k: Kart, by: Kart, type: String, dir_a: float) -> void:
-	k.knock_out()
+	if not k.puppet or k.ko <= 0.0:
+		k.knock_out()
 	if by and by != k:
 		by.kills += 1
 	var p3 := Vector3(k.pos.x, k.z + 0.8, k.pos.y)
@@ -481,6 +661,9 @@ func _process(dt: float) -> void:
 		return
 	t += dt
 	if state == "menu":
+		if autotest and net.active and net.is_host and not net.in_race and net.players.size() >= int(OS.get_environment("NET_PLAYERS") if OS.has_environment("NET_PLAYERS") else "2"):
+			net.start()
+			return
 		_menu_cam()
 		for k in racers:
 			k.sync_visual(dt)
@@ -507,18 +690,32 @@ func _process(dt: float) -> void:
 				player.boost = 1.3
 				msg("Rocket start!", Color("ffe36e"))
 			for k in racers:
-				if not k.is_player and randf() < 0.4:
+				if not k.is_player and not k.puppet and randf() < 0.4:
 					k.boost = 0.8 + randf() * 0.5
 	else:
+		if autotest and online() and fmod(race_time, 2.0 if OS.has_feature("web") else 10.0) < dt:
+			var ln := "[t=%.0f %s] " % [race_time, state]
+			for k in racers:
+				ln += "%s%s p=%d (%.0f,%.0f) ko=%.1f | " % [k.sp.name, "*" if k.puppet else "", k.prog, k.pos.x, k.pos.y, k.ko]
+			print(ln)
 		race_time += dt
 		if go_t > 0.0:
 			go_t -= dt
 		var pk := player.prog
+		var diff := net_diff if online() else difficulty
+		if online():
+			# AI rubber-bands against the leading human
+			for k in racers:
+				if k.net_owner != 0:
+					pk = maxi(pk, k.prog)
 		for k in racers:
-			if k.is_player:
+			if k.puppet:
+				k.net_tick(dt)
+				continue
+			if k.is_player or k.net_owner != 0:
 				k.skill_mul = 0.9 if k.finished else 1.0
 			else:
-				k.skill_mul = k.skill * DIFF_MUL[difficulty] * (1.0 + clampf(float(pk - k.prog) / (world.N * 0.5), -0.1, 0.12 if difficulty > 0 else 0.04))
+				k.skill_mul = k.skill * DIFF_MUL[diff] * (1.0 + clampf(float(pk - k.prog) / (world.N * 0.5), -0.1, 0.12 if diff > 0 else 0.04))
 			var inp := player_input() if (k.is_player and not k.finished and not autotest) else k.ai_input(dt)
 			k.step(dt, inp)
 			if not k.is_player or k.finished or autotest:
@@ -542,7 +739,10 @@ func _process(dt: float) -> void:
 					var line := ""
 					for k in order:
 						line += "%s lap=%d fin=%s t=%.1f kills=%d kos=%d mt=%s | " % [k.sp.name, k.lap, k.finished, k.finish_time, k.kills, k.kos, k.mt_count]
-					print("RESULT [%s %s] " % [mode, theme().name], line, " decals=", gore.dec_n, " gp=", gp_points, " rec=", tt_record)
+					print("RESULT [%s %s%s] " % [mode, theme().name, (" online id=%d" % net.my_id) if online() else ""], line, " decals=", gore.dec_n, " gp=", gp_points, " rec=", tt_record)
+					if online():
+						get_tree().create_timer(12.0).timeout.connect(get_tree().quit)
+						return
 					if mode == "gp" and gp_round < Tracks.THEMES.size() - 1:
 						next_gp_race()
 						return
@@ -577,7 +777,7 @@ func on_lap(k: Kart) -> void:
 		k.finished = true
 		k.finish_time = race_time
 		finish_count += 1
-		k.place = finish_count
+		k.place = racers.filter(func(o): return o.finished).size()
 		if k.is_player:
 			state = "finished"
 			fin_t = 0.0
@@ -602,10 +802,12 @@ func _collide_racers() -> void:
 				var l := sqrt(l2)
 				var push := (2.0 * Kart.RADIUS - l) * 0.5
 				var n := d / l
-				a.pos -= n * push
-				b.pos += n * push
-				a.speed *= 0.97
-				b.speed *= 0.97
+				if not a.puppet:
+					a.pos -= n * push * (2.0 if b.puppet else 1.0)
+					a.speed *= 0.97
+				if not b.puppet:
+					b.pos += n * push * (2.0 if a.puppet else 1.0)
+					b.speed *= 0.97
 				if (a.is_player or b.is_player) and randf() < 0.2:
 					Sfx.play("bump", 0.6)
 
@@ -677,18 +879,20 @@ func _update_projectiles(dt: float) -> void:
 			p.y = world.ground(p.pos, world.nearest_local(p.pos, best, 4)).x
 		if p.life > 0.0:
 			for k in racers:
-				if k.ko > 0.0 or (k == p.owner and p.t < 1.2):
+				if k.puppet or k.ko > 0.0 or (k == p.owner and p.t < 1.2):
 					continue
 				if k.pos.distance_squared_to(p.pos) < (2.25 if p.type == "slime" else 1.9) and absf(k.z - p.y) < 2.25:
 					if hit_kart(k, p):
 						p.life = 0.0
 						p.hit = true
 						break
-		if p.life > 0.0 and p.speed > 0.0 and p.fly <= 0.0:
+		if p.life > 0.0 and p.speed > 0.0 and p.fly <= 0.0 and (not online() or net.is_host):
 			for q in projectiles:
 				if q == p or q.speed > 0.0 or q.life <= 0.0:
 					continue
 				if q.pos.distance_squared_to(p.pos) < 1.25:
+					if online():
+						net.send_kill(int(p.get("pid", -1)), int(q.get("pid", -1)))
 					q.life = 0.0
 					p.life = 0.0
 					gore.explosion(Vector3(q.pos.x, q.y + 0.3, q.pos.y), 14)
@@ -708,7 +912,8 @@ func _update_projectiles(dt: float) -> void:
 func _update_boxes(dt: float) -> void:
 	if mode == "tt":
 		return
-	for b in boxes:
+	for bi in boxes.size():
+		var b: Dictionary = boxes[bi]
 		if not b.active:
 			b.t -= dt
 			if b.t <= 0.0:
@@ -716,7 +921,7 @@ func _update_boxes(dt: float) -> void:
 				b.node.visible = true
 			continue
 		for k in racers:
-			if k.ko > 0.0:
+			if k.ko > 0.0 or k.puppet:
 				continue
 			var bp: Vector3 = b.pos
 			if k.pos.distance_squared_to(Vector2(bp.x, bp.z)) < 2.25 and absf(k.z - bp.y + 1.0) < 2.0:
@@ -724,6 +929,8 @@ func _update_boxes(dt: float) -> void:
 				b.t = 3.0
 				b.node.visible = false
 				gore.sparkle(bp, 16)
+				if online():
+					net.send_box(bi)
 				if k.free_slot() >= 0 and k.roulette <= 0.0:
 					k.roulette = 1.1 if k.is_player else 0.6
 					k.pending = roll_item(k.rank)

@@ -81,6 +81,14 @@ var squash := 0.0
 var rank := 0
 var anim_t := 0.0
 var bloody_tyres := 0.0
+# online: a puppet is a kart driven on another device; we only show it
+var puppet := false
+var net_owner := 0            # net id of the human driving it (0 = AI)
+var net_pos := Vector2()
+var net_z := 0.0
+var net_a := 0.0
+var net_age := 0.0
+var has_net := false
 
 static func adiff(from: float, to: float) -> float:
 	var d := fmod(to - from, TAU)
@@ -504,3 +512,78 @@ func sync_visual(dt: float) -> void:
 	for s in spins:
 		s.rotation.x -= speed / 0.25 * dt
 	shield_mesh.visible = shield > 0.0 and (shield > 2.0 or int(anim_t * 10.0) % 2 == 0)
+
+# ------------------------------------------------------------------ online
+## State sent to other players (slot first).
+func net_pack() -> PackedFloat32Array:
+	return PackedFloat32Array([idx, pos.x, pos.y, z, a, speed, steer_vis, drift_vis, drift_tier,
+		boost, ko, 1.0 if drown else 0.0, shield, spin_a, invuln, lap, seg, prog,
+		1.0 if finished else 0.0, finish_time, squash, 1.0 if on_ground else 0.0, kos])
+
+func net_apply(d: PackedFloat32Array) -> void:
+	if d.size() < 23:
+		return
+	net_pos = Vector2(d[1], d[2])
+	net_z = d[3]
+	net_a = d[4]
+	speed = d[5]
+	steer_vis = d[6]
+	drift_vis = d[7]
+	drift_tier = int(d[8])
+	boost = d[9]
+	var nko := d[10]
+	if nko > 0.0 and ko <= 0.0:
+		pos = net_pos
+		z = net_z
+		knock_out()
+		kos -= 1
+	elif nko <= 0.0 and ko > 0.0:
+		ko = 0.0
+		bone.visible = false
+		ghost.visible = false
+		_set_wreck(false)
+		pos = net_pos
+		z = net_z
+		a = net_a
+	ko = nko
+	drown = d[11] > 0.5
+	shield = d[12]
+	spin_a = d[13]
+	invuln = d[14]
+	lap = int(d[15])
+	seg = int(d[16])
+	prog = int(d[17])
+	if d[18] > 0.5 and not finished:
+		finished = true
+		finish_time = d[19]
+	squash = d[20]
+	on_ground = d[21] > 0.5
+	kos = int(d[22])
+	net_age = 0.0
+	if not has_net:
+		has_net = true
+		pos = net_pos
+		z = net_z
+		a = net_a
+
+## Smoothly follow the latest state, predicting ahead with the kart's speed.
+func net_tick(dt: float) -> void:
+	net_age += dt
+	if ko > 0.0:
+		ko = maxf(0.0001, ko - dt)
+		return
+	if not has_net:
+		return
+	var ahead := Vector2(cos(net_a), sin(net_a)) * speed * minf(net_age, 0.25)
+	var target := net_pos + ahead
+	var f := 1.0 - exp(-14.0 * dt)
+	if pos.distance_to(target) > 8.0:
+		pos = target
+	else:
+		pos = pos.lerp(target, f)
+	z = lerpf(z, net_z, f)
+	a += adiff(a, net_a) * f
+	if invuln > 0.0:
+		invuln -= dt
+	if shield > 0.0:
+		shield -= dt
