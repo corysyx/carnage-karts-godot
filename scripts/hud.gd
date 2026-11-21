@@ -996,6 +996,7 @@ func _build_online() -> void:
 	var o := _overlay()
 	screens["online"] = o
 	var vb: VBoxContainer = o.get_meta("vb")
+	vb.add_theme_constant_override("separation", 8)
 	vb.add_child(_label("Play Online", 46, YELLOW, 14))
 	vb.add_child(_label("Race your friends. One of you hosts, the rest join with the room code.\nEmpty places are filled by AI critters (up to 6 racers).", 16, Color.WHITE, 5))
 	var host := _button("Host a game", Color("ff4f8b"), 28)
@@ -1034,18 +1035,23 @@ func _build_online() -> void:
 	vb.add_child(hb)
 	# on-screen letter pad: phone browsers don't open their keyboard for the game
 	var pad := GridContainer.new()
-	pad.columns = 11
+	pad.columns = 10
 	pad.add_theme_constant_override("h_separation", 5)
-	pad.add_theme_constant_override("v_separation", 5)
-	var keys: Array = Array(Net.CODE_CHARS.split("")) + ["⌫"]
+	pad.add_theme_constant_override("v_separation", 4)
+	var keys: Array = Array("1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("")) + ["←"]
 	for ch in keys:
-		var kb := _button(ch, Color(1, 1, 1, 0.18) if ch != "⌫" else Color("ff4f6e"), 20)
-		kb.custom_minimum_size = Vector2(50, 42)
+		var kb := _button(ch, Color(1, 1, 1, 0.18) if ch != "←" else Color("ff4f6e"), 18)
+		kb.custom_minimum_size = Vector2(52, 34)
+		for st in ["normal", "hover", "pressed", "focus"]:
+			var sb: StyleBoxFlat = kb.get_theme_stylebox(st).duplicate()
+			sb.content_margin_top = 2
+			sb.content_margin_bottom = 2
+			kb.add_theme_stylebox_override(st, sb)
 		kb.focus_mode = Control.FOCUS_NONE
 		var c: String = ch
 		kb.pressed.connect(func():
 			Sfx.play("get", 0.3)
-			if c == "⌫":
+			if c == "←":
 				code_edit.text = code_edit.text.substr(0, maxi(0, code_edit.text.length() - 1))
 			elif code_edit.text.length() < 4:
 				code_edit.text += c
@@ -1054,7 +1060,6 @@ func _build_online() -> void:
 	var padc := CenterContainer.new()
 	padc.add_child(pad)
 	vb.add_child(padc)
-	vb.add_child(_label("Codes never use I, O, 1 or 0, so they can't be mixed up.", 13, Color(1, 1, 1, 0.7), 4))
 	online_status = _label("", 18, Color("ffd2a0"), 5)
 	online_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	online_status.custom_minimum_size = Vector2(620, 0)
