@@ -5,12 +5,12 @@ extends RefCounted
 ##   Body (roll/squash) > WheelFL/WheelFR (steer pivots), Wheels/*, Driver (lean)
 
 const SPECIES := [
-	{"id": "bunny", "name": "Bun-Bun", "fur": Color("f7f2ee"), "fur2": Color("ffb3cf"), "kart": Color("ff6fa8"), "kart2": Color("c94681")},
-	{"id": "panda", "name": "Pandy", "fur": Color("ffffff"), "fur2": Color("2b2633"), "kart": Color("4fd1a5"), "kart2": Color("2a8f6e")},
-	{"id": "fox", "name": "Foxy", "fur": Color("ff8a3d"), "fur2": Color("fff3e6"), "kart": Color("ffd23f"), "kart2": Color("c99a12")},
-	{"id": "frog", "name": "Hopper", "fur": Color("7bd65b"), "fur2": Color("e9ffd9"), "kart": Color("5aa7ff"), "kart2": Color("2f6fc4")},
-	{"id": "pig", "name": "Oinkers", "fur": Color("ffb8c9"), "fur2": Color("ff8fab"), "kart": Color("a17cff"), "kart2": Color("6e4ed1")},
-	{"id": "kitty", "name": "Mochi", "fur": Color("bdb6cf"), "fur2": Color("ffffff"), "kart": Color("ff5a5a"), "kart2": Color("b83232")},
+	{"id": "bunny", "spd": 0.97, "acc": 1.08, "hdl": 1.05, "blurb": "Quick off the line and nimble in the bends.", "name": "Bun-Bun", "fur": Color("f7f2ee"), "fur2": Color("ffb3cf"), "kart": Color("ff6fa8"), "kart2": Color("c94681")},
+	{"id": "panda", "spd": 1.04, "acc": 0.93, "hdl": 0.97, "blurb": "Heavy and hard to stop once rolling.", "name": "Pandy", "fur": Color("ffffff"), "fur2": Color("2b2633"), "kart": Color("4fd1a5"), "kart2": Color("2a8f6e")},
+	{"id": "fox", "spd": 1.01, "acc": 1.01, "hdl": 1.01, "blurb": "An all-rounder with a sly grin.", "name": "Foxy", "fur": Color("ff8a3d"), "fur2": Color("fff3e6"), "kart": Color("ffd23f"), "kart2": Color("c99a12")},
+	{"id": "frog", "spd": 0.98, "acc": 1.03, "hdl": 1.07, "blurb": "Hops round corners like they are nothing.", "name": "Hopper", "fur": Color("7bd65b"), "fur2": Color("e9ffd9"), "kart": Color("5aa7ff"), "kart2": Color("2f6fc4")},
+	{"id": "pig", "spd": 1.05, "acc": 0.94, "hdl": 0.95, "blurb": "Top speed king. Corners? Optional.", "name": "Oinkers", "fur": Color("ffb8c9"), "fur2": Color("ff8fab"), "kart": Color("a17cff"), "kart2": Color("6e4ed1")},
+	{"id": "kitty", "spd": 1.0, "acc": 1.03, "hdl": 1.03, "blurb": "Light paws, sharp turns, nine lives.", "name": "Mochi", "fur": Color("bdb6cf"), "fur2": Color("ffffff"), "kart": Color("ff5a5a"), "kart2": Color("b83232")},
 ]
 const INK := Color("2a1830")
 

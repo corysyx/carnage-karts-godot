@@ -4,6 +4,7 @@ extends Node
 
 static var inst: Sfx
 static var muted := false
+static var volume := 1.0
 var streams := {}
 var pool: Array[AudioStreamPlayer] = []
 var engine: AudioStreamPlayer
@@ -36,12 +37,12 @@ func _ready() -> void:
 	add_child(engine)
 
 static func play(n: String, vol := 1.0) -> void:
-	if inst == null or muted or vol <= 0.02 or not inst.streams.has(n):
+	if inst == null or muted or volume <= 0.01 or vol <= 0.02 or not inst.streams.has(n):
 		return
 	var p := inst.pool[inst.next]
 	inst.next = (inst.next + 1) % inst.pool.size()
 	p.stream = inst.streams[n].pick_random()
-	p.volume_db = linear_to_db(clampf(vol, 0.0, 1.0)) - 4.0
+	p.volume_db = linear_to_db(clampf(vol * volume, 0.001, 1.0)) - 4.0
 	p.pitch_scale = randf_range(0.95, 1.05)
 	p.play()
 
@@ -49,10 +50,10 @@ static func engine_update(on: bool, speed: float, boosting: bool) -> void:
 	if inst == null:
 		return
 	var e := inst.engine
-	if on and not muted:
+	if on and not muted and volume > 0.01:
 		if not e.playing:
 			e.play()
-		e.volume_db = -16.0
+		e.volume_db = -16.0 + linear_to_db(maxf(volume, 0.001))
 		e.pitch_scale = clampf(0.9 + absf(speed) * 0.11 + (0.6 if boosting else 0.0), 0.5, 4.0)
 	elif e.playing:
 		e.stop()

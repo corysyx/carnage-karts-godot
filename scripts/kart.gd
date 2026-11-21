@@ -13,6 +13,7 @@ var world: WorldGen
 var sp: Dictionary
 var is_player := false
 var idx := 0
+var sp_idx := 0
 
 var model: Node3D
 var body: Node3D
@@ -84,6 +85,7 @@ func setup(r: Node, w: WorldGen, species: Dictionary, player: bool, slot: int) -
 	race = r
 	world = w
 	sp = species
+	sp_idx = Critters.SPECIES.find(species)
 	is_player = player
 	idx = slot
 	model = Critters.build(sp)
@@ -167,7 +169,7 @@ func step(dt: float, inp: Dictionary) -> void:
 			spin_a = 0.0
 	var g0 := world.ground(pos, nr)
 	var surf := int(g0.y)
-	var max_s := SPD * skill_mul
+	var max_s := SPD * skill_mul * float(sp.spd)
 	if surf == 0:
 		max_s *= 0.6
 	elif surf == 2:
@@ -178,7 +180,7 @@ func step(dt: float, inp: Dictionary) -> void:
 			thr = 1.0
 	if thr > 0.0:
 		if speed < max_s:
-			speed += minf(max_s - speed, (32.5 if boost > 0.0 else 13.0) * dt)
+			speed += minf(max_s - speed, (32.5 if boost > 0.0 else 13.0 * float(sp.acc)) * dt)
 		else:
 			speed -= minf(speed - max_s, 18.75 * dt)
 	elif thr < 0.0:
@@ -186,7 +188,7 @@ func step(dt: float, inp: Dictionary) -> void:
 		speed = maxf(speed, -6.0)
 	else:
 		speed -= speed * 1.1 * dt
-	var turn := 2.3 * clampf(speed / 6.25, -1.0, 1.0) * (1.0 if on_ground else 0.4)
+	var turn := 2.3 * float(sp.hdl) * clampf(speed / 6.25, -1.0, 1.0) * (1.0 if on_ground else 0.4)
 	if inp.get("drift", false) and st != 0.0 and speed > 7.5 and on_ground and spin <= 0.0:
 		turn *= 1.6
 		speed *= 1.0 - 0.22 * dt

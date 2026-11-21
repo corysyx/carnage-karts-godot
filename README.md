@@ -11,6 +11,22 @@ Six cute critters, low-poly cel-shaded kart racing, very messy finishes. This is
 
 It uses the **Compatibility** renderer so the same project runs on desktop, phones and the web.
 
+## Menus and modes
+
+**Play → mode → critter → track → race.** Settings are on the title screen.
+
+| Mode | What it is |
+|---|---|
+| Quick Race | One race on any track against five critters. |
+| Grand Prix | All four tracks in a row; 10, 8, 6, 4, 2, 1 points per race, then a final podium. |
+| Time Trial | Just you, no items. Best time per track is saved. |
+
+**Critters** each have their own speed, acceleration and handling (see `scripts/critters.gd`).
+
+**Tracks** (`scripts/tracks.gd`): Meadow Loop, Candy Canyon, Frosty Peaks, Sunset Shores. Each is generated from a seed and dressed by its theme (terrain shape, colours, trees, sky). Add a track by copying an entry and changing its seed and colours.
+
+**Settings** (saved): gore, AI difficulty, laps (1 to 5), sound volume, CRT filter, anti-aliasing, shadows.
+
 ## Controls
 
 | | Keyboard | Phone |
@@ -43,6 +59,7 @@ Everything is generated from a seed when the game starts. There are no model or 
 
 | File | What it does |
 |---|---|
+| `scripts/tracks.gd` | The four track themes. |
 | `scripts/world_gen.gd` | Spline track, terrain, road and kerbs, picket fences, lakes (open edges only along big lakes), trees, distant hills and clouds. Also answers ground-height and distance-from-road questions for physics. |
 | `scripts/critters.gd` | The six low-poly critters and karts, built from simple shapes. |
 | `scripts/kart.gd` | Arcade kart physics, fence collision, jumps, water, laps, AI steering and model animation. |
@@ -52,9 +69,10 @@ Everything is generated from a seed when the game starts. There are no model or 
 | `shaders/toon.gdshader` | Cel shading: banded light, optional faceted normals, grazing-angle ink. |
 | `shaders/outline.gdshader` | Ink outline shells around models. |
 | `shaders/ink_post.gdshader` | Screen-space ink lines from the depth buffer. |
+| `assets/sfx/el/` | Sound effects generated with ElevenLabs (several takes per sound, picked at random). |
 | `tools/make_sfx.py` | Synthesises the sound effects into `assets/sfx/` (`python3 tools/make_sfx.py`, needs numpy). |
 
-Run a headless simulated race: `godot --headless --fixed-fps 60 -- --autotest`
+Run a headless simulated race: `godot --headless --fixed-fps 60 -- --autotest --mode=quick|gp|tt --map=0..3`
 
 ## Editor add-ons (included)
 

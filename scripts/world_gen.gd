@@ -16,7 +16,6 @@ const KLIM := 6.25       # kart centre can't go further from the road centre tha
 const EXT := 84.0        # terrain half-size
 const GRID := 1.5
 const SPACING := 0.5
-const SEED := 20261112
 const BK := 8.0
 
 var N := 0
@@ -31,6 +30,8 @@ var gn := 0
 var hgrid := PackedFloat32Array()
 var buckets := {}
 var rng := RandomNumberGenerator.new()
+var theme: Dictionary = Tracks.THEMES[0]
+var seed_v := 0
 
 const TOON := preload("res://shaders/toon.gdshader")
 const OUTLINE := preload("res://shaders/outline.gdshader")
@@ -49,15 +50,23 @@ static func toon(col: Color, flat := false, outline := 0.0) -> ShaderMaterial:
 	return m
 
 # ------------------------------------------------------------------ build
-func build() -> void:
-	rng.seed = SEED
-	noise.seed = SEED
+func _c(key: String) -> Color:
+	return Tracks.col(theme, key)
+
+func _setup_noise(th: Dictionary) -> void:
+	theme = th
+	seed_v = int(th.seed)
+	rng.seed = seed_v
+	noise.seed = seed_v
 	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	noise.frequency = 0.014
 	noise.fractal_type = FastNoiseLite.FRACTAL_FBM
 	noise.fractal_octaves = 5
-	detail.seed = SEED + 7
+	detail.seed = seed_v + 7
 	detail.frequency = 0.09
+
+func build(th: Dictionary) -> void:
+	_setup_noise(th)
 	_gen_track()
 	_gen_open_sides()
 	_build_terrain()
@@ -75,7 +84,7 @@ func build() -> void:
 
 func base_h(x: float, z: float) -> float:
 	var v := noise.get_noise_2d(x, z) * 0.5 + 0.5
-	return (v - 0.40) * 64.0
+	return (v - float(theme.h_off)) * float(theme.h_scale)
 
 static func _cr(p0: float, p1: float, p2: float, p3: float, t: float) -> float:
 	var t2 := t * t
@@ -98,7 +107,7 @@ func _gen_track() -> void:
 	var cps: Array[Vector2] = []
 	for i in 12:
 		var a := float(i) / 12.0 * TAU
-		var r := 36.0 + rng.randf() * 20.0
+		var r: float = theme.radius[0] + rng.randf() * theme.radius[1]
 		cps.append(Vector2(cos(a), sin(a)) * r)
 	var dense: Array[Vector2] = []
 	for i in 12:
@@ -301,11 +310,11 @@ func _build_terrain() -> void:
 			hgrid[iz * gn + ix] = _terrain_vertex_h(-EXT + ix * GRID, -EXT + iz * GRID)
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var grass_a := Color("6cc65c")
-	var grass_b := Color("a3dc6c")
-	var sand := Color("f3dc9c")
-	var rock := Color("9c88ae")
-	var snow := Color("f6f4ff")
+	var grass_a := _c("grass_a")
+	var grass_b := _c("grass_b")
+	var sand := _c("sand")
+	var rock := _c("rock")
+	var snow := _c("snow")
 	for iz in gn - 1:
 		for ix in gn - 1:
 			var x0 := -EXT + ix * GRID
@@ -347,7 +356,7 @@ func _build_terrain() -> void:
 	pm.size = Vector2(900, 900)
 	far.mesh = pm
 	far.position.y = -2.0
-	far.material_override = toon(Color("86cf6c"))
+	far.material_override = toon(_c("far"))
 	add_child(far)
 
 ## Adds a triangle whose front face points up (Godot uses clockwise front faces).
@@ -370,11 +379,11 @@ func _quad_up(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3, c
 func _build_road() -> void:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var asphalt := Color("5f5a70")
-	var asphalt2 := Color("67627a")
+	var asphalt := _c("asphalt")
+	var asphalt2 := asphalt.lightened(0.06)
 	var red := Color("eb4060")
 	var white := Color("faf6ff")
-	var verge := Color("8fd770")
+	var verge := _c("verge")
 	var ink := Color("2a1830")
 	var yellow := Color("ffd640")
 	var dark := Color("2e2638")
@@ -477,10 +486,10 @@ func _build_fences() -> void:
 	postm.size = Vector3(0.24, 1.36, 0.24)
 	var railm := BoxMesh.new()
 	railm.size = Vector3(1.0, 0.1, 0.05)
-	_multimesh(pm, pickets, toon(Color("e6b47a"), false, 0.02), "FencePickets")
-	_multimesh(tm, tips, toon(Color("f0c58e"), false, 0.02), "FenceTips")
-	_multimesh(postm, posts, toon(Color("8a5634"), false, 0.025), "FencePosts")
-	_multimesh(railm, rails, toon(Color("b07a48")), "FenceRails")
+	_multimesh(pm, pickets, toon(_c("fence"), false, 0.02), "FencePickets")
+	_multimesh(tm, tips, toon(_c("fence").lightened(0.12), false, 0.02), "FenceTips")
+	_multimesh(postm, posts, toon(_c("post"), false, 0.025), "FencePosts")
+	_multimesh(railm, rails, toon(_c("fence").lerp(_c("post"), 0.45)), "FenceRails")
 
 # ------------------------------------------------------------------ water
 func _build_water() -> void:
@@ -490,7 +499,7 @@ func _build_water() -> void:
 	pm.subdivide_width = 0
 	w.mesh = pm
 	w.position.y = WATER
-	var m := toon(Color("62b4f0"))
+	var m := toon(_c("water"))
 	m.set_shader_parameter("shadow_band", 0.9)
 	w.material_override = m
 	w.name = "Water"
@@ -520,13 +529,17 @@ func _build_trees() -> void:
 		var s := rng.randf_range(0.8, 1.35)
 		var yaw := Basis(Vector3.UP, rng.randf() * TAU)
 		var kind := rng.randf()
-		if kind < 0.4:
+		var tw: Dictionary = theme.trees
+		var c1: float = tw.pine
+		var c2: float = c1 + float(tw.round)
+		var c3: float = c2 + float(tw.candy)
+		if kind < c1:
 			trunks.append(Transform3D(yaw.scaled(Vector3(s, s, s)), Vector3(x, h + 0.6 * s, z)))
 			pines.append(Transform3D(yaw.scaled(Vector3(s, s, s)), Vector3(x, h + 2.2 * s, z)))
-		elif kind < 0.7:
+		elif kind < c2:
 			trunks.append(Transform3D(yaw.scaled(Vector3(s, s, s)), Vector3(x, h + 0.6 * s, z)))
 			rounds.append(Transform3D(yaw.scaled(Vector3(s, s * 0.9, s)), Vector3(x, h + 2.0 * s, z)))
-		elif kind < 0.85:
+		elif kind < c3:
 			sticks.append(Transform3D(yaw.scaled(Vector3(s, s, s)), Vector3(x, h + 0.9 * s, z)))
 			candy.append(Transform3D(yaw.scaled(Vector3(s, s, s)), Vector3(x, h + 2.1 * s, z)))
 		else:
@@ -543,12 +556,12 @@ func _build_trees() -> void:
 	stick.top_radius = 0.1; stick.bottom_radius = 0.12; stick.height = 1.8; stick.radial_segments = 6
 	var bush := SphereMesh.new()
 	bush.radius = 0.8; bush.height = 1.4; bush.radial_segments = 7; bush.rings = 4
-	_multimesh(trunk, trunks, toon(Color("9a6640"), true, 0.03), "Trunks")
-	_multimesh(pine, pines, toon(Color("3fae5a"), true, 0.05), "Pines")
-	_multimesh(ball, rounds, toon(Color("5cc860"), true, 0.05), "RoundTrees")
+	_multimesh(trunk, trunks, toon(_c("trunk"), true, 0.03), "Trunks")
+	_multimesh(pine, pines, toon(_c("pine_col"), true, 0.05), "Pines")
+	_multimesh(ball, rounds, toon(_c("round_col"), true, 0.05), "RoundTrees")
 	_multimesh(stick, sticks, toon(Color("fff4fa"), true, 0.03), "CandySticks")
-	_multimesh(cball, candy, toon(Color("ff92c8"), true, 0.05), "CandyTrees")
-	_multimesh(bush, bushes, toon(Color("4fb85a"), true, 0.04), "Bushes")
+	_multimesh(cball, candy, toon(_c("candy_col"), true, 0.05), "CandyTrees")
+	_multimesh(bush, bushes, toon(_c("bush_col"), true, 0.04), "Bushes")
 
 # ------------------------------------------------------------------ distant scenery
 func _build_scenery() -> void:
@@ -573,13 +586,22 @@ func _build_scenery() -> void:
 			clouds.append(Transform3D(Basis().scaled(Vector3(s, s * 0.7, s)), Vector3(cos(a) * r + (b - 1.5) * 6.0, y + sin(b * 1.7) * 1.5, sin(a) * r + rng.randf_range(-3, 3))))
 	var hm := SphereMesh.new()
 	hm.radius = 1.0; hm.height = 2.0; hm.radial_segments = 9; hm.rings = 5
-	var fh := toon(Color("b49bd6"), true)
+	var fh := toon(Color(String(theme.hills[0])), true)
 	fh.set_shader_parameter("rim_ink", 0.2)
 	_multimesh(hm, hills, fh, "FarHills")
-	_multimesh(hm, hills2, toon(Color("8fcf88"), true), "FarHills2")
+	_multimesh(hm, hills2, toon(Color(String(theme.hills[1])), true), "FarHills2")
 	var cm := SphereMesh.new()
 	cm.radius = 1.0; cm.height = 2.0; cm.radial_segments = 8; cm.rings = 5
 	var cmat := toon(Color("ffffff"), true)
 	cmat.set_shader_parameter("shadow_band", 0.92)
 	cmat.set_shader_parameter("shadow_tint", Color("e8dcff"))
 	_multimesh(cm, clouds, cmat, "Clouds")
+
+## Track shape only (no meshes), for menu previews.
+static func preview(th: Dictionary) -> PackedVector2Array:
+	var w := WorldGen.new()
+	w._setup_noise(th)
+	w._gen_track()
+	var pts := w.P.duplicate()
+	w.free()
+	return pts

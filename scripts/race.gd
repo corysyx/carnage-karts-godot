@@ -2,11 +2,15 @@ extends Node3D
 ## Game flow: menu -> countdown -> race -> results. Owns the racers, camera,
 ## item boxes, projectiles, and wires up HUD, gore and sound.
 
-const LAPS := 3
 const ITEMS := ["rocket", "saw", "mine", "slime", "boost", "shield"]
 const ITEM_NAME := {"rocket": "Carrot Rocket", "saw": "Buzz Saw", "mine": "Spike Mine", "slime": "Slime Puddle", "boost": "Sugar Rush", "shield": "Bubble Shield"}
 const KILL_LINES := ["turned you into jam!", "popped you like a juice box!", "made a critter smoothie out of you!", "sent you to the big meadow in the sky!"]
 const SPLAT_LINES := ["SPLAT! You turned {n} into jam!", "SQUISH! {n} is now road paint!", "KABLOOEY! Bye bye, {n}!", "{n} went everywhere!"]
+const MODES := ["quick", "gp", "tt"]
+const MODE_NAME := {"quick": "Quick Race", "gp": "Grand Prix", "tt": "Time Trial"}
+const GP_POINTS := [10, 8, 6, 4, 2, 1]
+const DIFF_NAME := ["Easy", "Normal", "Hard"]
+const DIFF_MUL := [0.9, 1.0, 1.07]
 
 var world: WorldGen
 var gore: Gore
@@ -43,40 +47,95 @@ var settings := ConfigFile.new()
 var autotest := false
 var shots: Array = []
 var shot_dir := ""
+# modes and options
+var mode := "quick"
+var map_idx := 0
+var loaded_map := -1
+var laps := 3
+var difficulty := 1
+var gp_round := 0
+var gp_points := [0, 0, 0, 0, 0, 0]      # by species index
+var gp_last: Array = []                   # last race: [{sp_idx, place, pts}]
+var tt_record := false
+var menu_view := "orbit"                  # "orbit" (track) or "garage" (character showcase)
 
 func _ready() -> void:
 	randomize()
 	settings.load("user://settings.cfg")
 	gore_level = settings.get_value("game", "gore", 1)
 	selected = settings.get_value("game", "critter", 0)
-	world = WorldGen.new()
-	add_child(world)
-	world.build()
+	laps = settings.get_value("game", "laps", 3)
+	difficulty = settings.get_value("game", "difficulty", 1)
+	map_idx = settings.get_value("game", "map", 0)
 	Env.setup(self)
+	Env.set_shadows(settings.get_value("video", "shadows", true))
 	add_child(Sfx.new())
+	Sfx.volume = settings.get_value("audio", "volume", 1.0)
 	gore = Gore.new()
 	add_child(gore)
-	gore.setup(self, world)
-	gore.level = gore_level
 	cam = Camera3D.new()
 	cam.fov = 72.0
 	cam.far = 600.0
 	add_child(cam)
-	_build_boxes()
+	load_map(map_idx)
 	hud = Hud.new()
 	var layer := CanvasLayer.new()
 	add_child(layer)
 	layer.add_child(hud)
 	hud.setup(self)
-	_spawn_racers(true)
 	var web_demo := OS.has_feature("web") and str(JavaScriptBridge.eval("location.hash", true)) == "#demo"
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--shots="):
 			shot_dir = arg.substr(8)
 			shots = [2.0, 9.0, 18.0, 30.0, 45.0]
+		if arg.begins_with("--map="):
+			load_map(int(arg.substr(6)))
+		if arg.begins_with("--mode="):
+			mode = arg.substr(7)
 	if "--autotest" in OS.get_cmdline_user_args() or web_demo:
 		autotest = true
-		start_race()
+		begin_mode(mode)
+
+func save_settings() -> void:
+	settings.set_value("game", "critter", selected)
+	settings.set_value("game", "gore", gore_level)
+	settings.set_value("game", "laps", laps)
+	settings.set_value("game", "difficulty", difficulty)
+	settings.set_value("game", "map", map_idx)
+	settings.save("user://settings.cfg")
+
+# ------------------------------------------------------------------ maps
+func load_map(i: int) -> void:
+	map_idx = clampi(i, 0, Tracks.THEMES.size() - 1)
+	if loaded_map == map_idx and world != null:
+		return
+	for p in projectiles:
+		p.node.queue_free()
+	projectiles.clear()
+	for b in boxes:
+		b.node.queue_free()
+	boxes.clear()
+	if world:
+		for k in racers:
+			k.ghost.queue_free()
+			k.queue_free()
+		racers.clear()
+		world.queue_free()
+	world = WorldGen.new()
+	add_child(world)
+	world.build(Tracks.THEMES[map_idx])
+	Env.apply_theme(Tracks.THEMES[map_idx])
+	if gore.world == null:
+		gore.setup(self, world)
+	gore.world = world
+	gore.level = gore_level
+	gore.reset()
+	_build_boxes()
+	loaded_map = map_idx
+	_spawn_racers(true)
+
+func theme() -> Dictionary:
+	return Tracks.THEMES[map_idx]
 
 # ------------------------------------------------------------------ setup
 func _spawn_racers(menu: bool) -> void:
@@ -89,14 +148,18 @@ func _spawn_racers(menu: bool) -> void:
 		if i != selected:
 			others.append(i)
 	others.shuffle()
+	var solo := mode == "tt" and not menu
 	for slot in 6:
+		var is_p := slot == 5
+		if solo and not is_p:
+			continue
 		var k := Kart.new()
 		add_child(k)
-		var is_p := slot == 5
 		var sp: Dictionary = Critters.SPECIES[selected if is_p else others[slot]]
 		k.setup(self, world, sp, is_p, slot)
-		var s := (world.N - 5 - slot * 4 + world.N) % world.N
-		k.place_on_grid(s, 1.75 if slot % 2 else -1.75)
+		var gs := 0 if solo else slot
+		var s := (world.N - 5 - gs * 4 + world.N) % world.N
+		k.place_on_grid(s, 0.0 if solo else (1.75 if slot % 2 else -1.75))
 		racers.append(k)
 		if is_p:
 			player = k
@@ -128,20 +191,33 @@ func _build_boxes() -> void:
 		add_child(n)
 		boxes.append({"node": n, "mesh": mi, "pos": spot + Vector3(0, 1.0, 0), "active": true, "t": 0.0, "ph": randf() * 6.0})
 
+## Begin a mode from the menus. For Grand Prix this starts round 1.
+func begin_mode(m: String) -> void:
+	mode = m
+	if mode == "gp":
+		gp_round = 0
+		gp_points = [0, 0, 0, 0, 0, 0]
+		load_map(0)
+	start_race()
+
+func next_gp_race() -> void:
+	gp_round += 1
+	load_map(gp_round)
+	start_race()
+
 func start_race() -> void:
-	settings.set_value("game", "critter", selected)
-	settings.set_value("game", "gore", gore_level)
-	settings.save("user://settings.cfg")
+	save_settings()
 	gore.level = gore_level
 	gore.reset()
 	for p in projectiles:
 		p.node.queue_free()
 	projectiles.clear()
 	for b in boxes:
-		b.active = true
-		b.node.visible = true
+		b.active = mode != "tt"
+		b.node.visible = mode != "tt"
 	msgs.clear()
 	finish_count = 0
+	tt_record = false
 	_spawn_racers(false)
 	state = "countdown"
 	cd = 3.99
@@ -154,6 +230,37 @@ func start_race() -> void:
 	hit_flash = 0.0
 	cam_a = player.a
 	hud.on_race_start()
+
+## Final finishing order with estimated times for racers still on track.
+func final_rows() -> Array:
+	var rows: Array = []
+	for k in order:
+		var tm: float = k.finish_time if k.finished else race_time + float(laps * world.N - k.prog) * 0.5 / 15.5
+		rows.append({"k": k, "t": tm, "est": not k.finished})
+	rows.sort_custom(func(a, b): return a.t < b.t)
+	return rows
+
+func _on_results() -> void:
+	if mode == "gp":
+		gp_last.clear()
+		var rows := final_rows()
+		for i in rows.size():
+			var k: Kart = rows[i].k
+			var pts: int = GP_POINTS[i]
+			gp_points[k.sp_idx] += pts
+			gp_last.append({"sp_idx": k.sp_idx, "place": i + 1, "pts": pts})
+	elif mode == "tt":
+		var key := "tt_%d" % map_idx
+		var best: float = settings.get_value("records", key, -1.0)
+		if best < 0.0 or player.finish_time < best:
+			settings.set_value("records", key, player.finish_time)
+			settings.set_value("records", key + "_lap", player.best_lap)
+			settings.set_value("records", key + "_laps", laps)
+			settings.save("user://settings.cfg")
+			tt_record = true
+
+func record_for(i: int) -> float:
+	return settings.get_value("records", "tt_%d" % i, -1.0)
 
 func msg(text: String, col := Color.WHITE, dur := 2.6) -> void:
 	msgs.append({"text": text, "col": col, "t": dur})
@@ -374,6 +481,8 @@ func _process(dt: float) -> void:
 		_menu_cam()
 		for k in racers:
 			k.sync_visual(dt)
+			if menu_view == "garage" and not k.is_player:
+				k.visible = false
 		_update_boxes_visual()
 		hud.queue_redraw()
 		return
@@ -406,7 +515,7 @@ func _process(dt: float) -> void:
 			if k.is_player:
 				k.skill_mul = 0.9 if k.finished else 1.0
 			else:
-				k.skill_mul = k.skill * (1.0 + clampf(float(pk - k.prog) / (world.N * 0.5), -0.1, 0.12))
+				k.skill_mul = k.skill * DIFF_MUL[difficulty] * (1.0 + clampf(float(pk - k.prog) / (world.N * 0.5), -0.1, 0.12 if difficulty > 0 else 0.04))
 			var inp := player_input() if (k.is_player and not k.finished and not autotest) else k.ai_input(dt)
 			k.step(dt, inp)
 			if not k.is_player or k.finished or autotest:
@@ -424,12 +533,16 @@ func _process(dt: float) -> void:
 			fin_t += dt
 			if fin_t > 3.6:
 				state = "results"
+				_on_results()
 				hud.show_results()
 				if autotest:
 					var line := ""
 					for k in order:
 						line += "%s lap=%d fin=%s t=%.1f kills=%d kos=%d | " % [k.sp.name, k.lap, k.finished, k.finish_time, k.kills, k.kos]
-					print("RESULT ", line, " decals=", gore.dec_n)
+					print("RESULT [%s %s] " % [mode, theme().name], line, " decals=", gore.dec_n, " gp=", gp_points, " rec=", tt_record)
+					if mode == "gp" and gp_round < Tracks.THEMES.size() - 1:
+						next_gp_race()
+						return
 					if not OS.has_feature("web"):
 						get_tree().quit()
 	item_pressed = false
@@ -457,7 +570,7 @@ func on_lap(k: Kart) -> void:
 	if k.best_lap < 0.0 or lt < k.best_lap:
 		k.best_lap = lt
 	k.lap_start = race_time
-	if k.lap >= LAPS and not k.finished:
+	if k.lap >= laps and not k.finished:
 		k.finished = true
 		k.finish_time = race_time
 		finish_count += 1
@@ -468,7 +581,7 @@ func on_lap(k: Kart) -> void:
 			Sfx.play("beep_hi")
 			msg("YOU WIN!" if k.place == 1 else "You finished " + Hud.ordinal(k.place), Color("ffe36e"), 4.0)
 	elif k.is_player:
-		msg("FINAL LAP!" if k.lap == LAPS - 1 else "Lap %d" % (k.lap + 1), Color("ff7a8a") if k.lap == LAPS - 1 else Color.WHITE)
+		msg("FINAL LAP!" if k.lap == laps - 1 else "Lap %d" % (k.lap + 1), Color("ff7a8a") if k.lap == laps - 1 else Color.WHITE)
 		Sfx.play("get")
 
 func _collide_racers() -> void:
@@ -590,6 +703,8 @@ func _update_projectiles(dt: float) -> void:
 		i -= 1
 
 func _update_boxes(dt: float) -> void:
+	if mode == "tt":
+		return
 	for b in boxes:
 		if not b.active:
 			b.t -= dt
@@ -624,9 +739,18 @@ func _update_boxes_visual() -> void:
 
 # ------------------------------------------------------------------ camera
 func _menu_cam() -> void:
-	var aa := t * 0.12
+	if menu_view == "garage" and player:
+		var kp := Vector3(player.pos.x, player.z, player.pos.y)
+		var aa := t * 0.5
+		var off := Vector3(cos(aa), 0, sin(aa)) * 4.2
+		cam.global_position = kp + off + Vector3(0, 1.7, 0)
+		# aim a little to the kart's left so it sits right of the menu panel
+		var side := cam.global_transform.basis.x
+		cam.look_at(kp + Vector3(0, 0.75, 0) - side * 1.3)
+		return
+	var aa2 := t * 0.12
 	var c := Vector2(world.P[0].x, world.P[0].y)
-	var p := c + Vector2(cos(aa), sin(aa)) * 13.0
+	var p := c + Vector2(cos(aa2), sin(aa2)) * 13.0
 	cam.global_position = Vector3(p.x, maxf(world.TH[0] + 4.5, world.terrain_h(p.x, p.y) + 2.0), p.y)
 	cam.look_at(Vector3(c.x, world.TH[0] + 0.8, c.y))
 

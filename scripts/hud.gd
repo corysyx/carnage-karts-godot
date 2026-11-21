@@ -15,7 +15,6 @@ var joy_origin := Vector2()
 var joy_pos := Vector2()
 var joy_active := false
 
-var menu: Control
 var results: Control
 var pause_panel: Control
 var crt: ColorRect
@@ -48,7 +47,7 @@ func setup(r: Node) -> void:
 	font = get_theme_default_font()
 	touch_mode = DisplayServer.is_touchscreen_available()
 	_build_crt()
-	_build_menu()
+	_build_menus()
 	_build_results()
 	_build_pause()
 	set_crt(race.settings.get_value("video", "crt", true))
@@ -132,100 +131,6 @@ func _seg(vb: VBoxContainer, title: String, opts: Array, cur: int, cb: Callable)
 		hb.add_child(b)
 	vb.add_child(hb)
 
-func _build_menu() -> void:
-	menu = _overlay()
-	var vb: VBoxContainer = menu.get_meta("vb")
-	var title := _label("Carnage Karts", 64, YELLOW, 18)
-	title.add_theme_color_override("font_shadow_color", Color("e0306f"))
-	title.add_theme_constant_override("shadow_offset_y", 5)
-	vb.add_child(title)
-	vb.add_child(_label("Six cute critters. Three laps. A very messy finish.", 18, Color.WHITE, 6))
-	var hb := HBoxContainer.new()
-	hb.alignment = BoxContainer.ALIGNMENT_CENTER
-	hb.add_theme_constant_override("separation", 8)
-	for i in Critters.SPECIES.size():
-		var sp: Dictionary = Critters.SPECIES[i]
-		var b := _button(sp.name, sp.kart, 18)
-		b.custom_minimum_size = Vector2(108, 52)
-		var idx := i
-		b.pressed.connect(func(): _select(idx))
-		char_buttons.append(b)
-		hb.add_child(b)
-	vb.add_child(hb)
-	_seg(vb, "Gore:", ["Off", "On", "Extra"], race.gore_level, func(i): race.gore_level = i; race.gore.level = i)
-	_seg(vb, "CRT filter:", ["Off", "On"], 1 if race.settings.get_value("video", "crt", true) else 0, func(i): set_crt(i == 1))
-	_seg(vb, "Anti-aliasing:", ["Off", "On"], 1 if race.settings.get_value("video", "aa", true) else 0, func(i): set_aa(i == 1))
-	var start := _button("Start Race", Color("ff4f8b"), 30)
-	start.custom_minimum_size = Vector2(260, 60)
-	start.pressed.connect(func(): race.start_race())
-	var sc := CenterContainer.new()
-	sc.add_child(start)
-	vb.add_child(sc)
-	var help := _label("", 15, Color(1, 1, 1, 0.9), 5)
-	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	help.custom_minimum_size = Vector2(min(760, get_viewport_rect().size.x - 40), 0)
-	if touch_mode:
-		help.text = "Karts drive themselves. Touch the left side to steer (push up/down to aim items). ITEM fires, tap the slots up top to swap, hold DRIFT round corners."
-	else:
-		help.text = "W / Up gas · S / Down brake · A D / Left Right steer · Shift drift · Space use item (hold Up/Down to aim) · Q swap item · R back to track · P pause · M mute"
-	vb.add_child(help)
-	_select(race.selected, true)
-
-func _select(i: int, quiet := false) -> void:
-	race.selected = i
-	for j in char_buttons.size():
-		var b := char_buttons[j]
-		var sp: Dictionary = Critters.SPECIES[j]
-		var border: Color = YELLOW if j == i else (sp.kart as Color).darkened(0.35)
-		b.add_theme_stylebox_override("normal", _style(sp.kart, 999, border))
-		b.add_theme_stylebox_override("hover", _style(sp.kart.lightened(0.1), 999, border))
-		b.scale = Vector2(1.08, 1.08) if j == i else Vector2.ONE
-		b.pivot_offset = b.custom_minimum_size * 0.5
-	if not quiet:
-		race._spawn_racers(true)
-		Sfx.play("get", 0.5)
-
-func _build_results() -> void:
-	results = _overlay()
-	results.visible = false
-	var vb: VBoxContainer = results.get_meta("vb")
-	res_title = _label("Results", 44, YELLOW, 14)
-	vb.add_child(res_title)
-	var pc := PanelContainer.new()
-	pc.add_theme_stylebox_override("panel", _style(Color(0, 0, 0, 0.35), 16, Color(1, 1, 1, 0.15)))
-	res_grid = GridContainer.new()
-	res_grid.columns = 4
-	res_grid.add_theme_constant_override("h_separation", 26)
-	res_grid.add_theme_constant_override("v_separation", 4)
-	pc.add_child(res_grid)
-	vb.add_child(pc)
-	var hb := HBoxContainer.new()
-	hb.alignment = BoxContainer.ALIGNMENT_CENTER
-	hb.add_theme_constant_override("separation", 14)
-	var again := _button("Race Again")
-	again.pressed.connect(func(): results.visible = false; race.start_race())
-	var back := _button("Change Critter", Color("6c5ce7"))
-	back.pressed.connect(func(): to_menu())
-	hb.add_child(again)
-	hb.add_child(back)
-	vb.add_child(hb)
-
-func _build_pause() -> void:
-	pause_panel = _overlay()
-	pause_panel.visible = false
-	var vb: VBoxContainer = pause_panel.get_meta("vb")
-	vb.add_child(_label("Paused", 48, YELLOW, 14))
-	var hb := HBoxContainer.new()
-	hb.alignment = BoxContainer.ALIGNMENT_CENTER
-	hb.add_theme_constant_override("separation", 14)
-	var res := _button("Resume")
-	res.pressed.connect(func(): race.toggle_pause())
-	var quit := _button("Quit to Menu", Color("6c5ce7"))
-	quit.pressed.connect(func(): race.paused = false; pause_panel.visible = false; to_menu())
-	hb.add_child(res)
-	hb.add_child(quit)
-	vb.add_child(hb)
-
 func _build_crt() -> void:
 	crt = ColorRect.new()
 	crt.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -264,8 +169,340 @@ func set_aa(on: bool) -> void:
 	race.settings.save("user://settings.cfg")
 
 # ------------------------------------------------------------------ flow
+func set_shadows(on: bool) -> void:
+	Env.set_shadows(on)
+	race.settings.set_value("video", "shadows", on)
+	race.settings.save("user://settings.cfg")
+
+# ------------------------------------------------------------------ screens
+var screens := {}
+var cur_screen := ""
+var history: Array[String] = []
+var char_name: Label
+var char_blurb: Label
+var char_stats: Control
+var map_cards: Array[PanelContainer] = []
+var map_title: Label
+var map_start: Button
+var map_note: Label
+var previews: Array = []
+var res_buttons: HBoxContainer
+
+func _card_style(col: Color, sel: bool) -> StyleBoxFlat:
+	var sb := _style(col, 18, YELLOW if sel else Color(1, 1, 1, 0.25))
+	sb.set_border_width_all(5 if sel else 3)
+	sb.content_margin_left = 12
+	sb.content_margin_right = 12
+	sb.content_margin_top = 10
+	sb.content_margin_bottom = 10
+	return sb
+
+func _hbox(sep := 12) -> HBoxContainer:
+	var hb := HBoxContainer.new()
+	hb.alignment = BoxContainer.ALIGNMENT_CENTER
+	hb.add_theme_constant_override("separation", sep)
+	return hb
+
+func _back_button(vb: Container) -> void:
+	var b := _button("Back", Color("6c5ce7"), 22)
+	b.pressed.connect(go_back)
+	var cc := CenterContainer.new()
+	cc.add_child(b)
+	vb.add_child(cc)
+
+func show_screen(n: String, remember := true) -> void:
+	if remember and cur_screen != "" and cur_screen != n:
+		history.append(cur_screen)
+	for k in screens:
+		screens[k].visible = k == n
+	cur_screen = n
+	race.menu_view = "garage" if n == "character" else "orbit"
+	if n == "map":
+		_refresh_maps()
+	if n == "character":
+		_refresh_char()
+
+func go_back() -> void:
+	Sfx.play("get", 0.4)
+	if history.is_empty():
+		show_screen("title", false)
+	else:
+		show_screen(history.pop_back(), false)
+
+func _build_menus() -> void:
+	for th in Tracks.THEMES:
+		previews.append(WorldGen.preview(th))
+	_build_title()
+	_build_modes()
+	_build_character()
+	_build_maps()
+	_build_settings()
+	show_screen("title", false)
+
+func _build_title() -> void:
+	var o := _overlay()
+	screens["title"] = o
+	var vb: VBoxContainer = o.get_meta("vb")
+	var title := _label("Carnage Karts", 76, YELLOW, 20)
+	title.add_theme_color_override("font_shadow_color", Color("e0306f"))
+	title.add_theme_constant_override("shadow_offset_y", 6)
+	vb.add_child(title)
+	vb.add_child(_label("Six cute critters. Very messy finishes.", 20, Color.WHITE, 6))
+	vb.add_child(Control.new())
+	for item in [["Play", Color("ff4f8b"), func(): show_screen("mode")], ["Settings", Color("6c5ce7"), func(): show_screen("settings")]]:
+		var b := _button(item[0], item[1], 32)
+		b.custom_minimum_size = Vector2(300, 66)
+		b.pressed.connect(item[2])
+		var cc := CenterContainer.new()
+		cc.add_child(b)
+		vb.add_child(cc)
+	var help := _label("", 14, Color(1, 1, 1, 0.85), 5)
+	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	help.custom_minimum_size = Vector2(700, 0)
+	if touch_mode:
+		help.text = "Karts drive themselves. Touch the left side to steer (push up/down to aim items). ITEM fires, tap the slots up top to swap, hold DRIFT round corners."
+	else:
+		help.text = "W / Up gas · S / Down brake · A D / Left Right steer · Shift drift · Space use item (hold Up/Down to aim) · Q swap item · R back to track · P pause · M mute"
+	vb.add_child(help)
+
+func _build_modes() -> void:
+	var o := _overlay()
+	screens["mode"] = o
+	var vb: VBoxContainer = o.get_meta("vb")
+	vb.add_child(_label("Choose a mode", 46, YELLOW, 14))
+	var hb := _hbox(16)
+	var info := [
+		["quick", "Quick Race", "One race on any track\nagainst five critters.", Color("ff4f8b")],
+		["gp", "Grand Prix", "All four tracks in a row.\nPoints decide the champion.", Color("f5a623")],
+		["tt", "Time Trial", "Just you and the clock.\nNo items. Beat your record.", Color("38b6a3")],
+	]
+	for m in info:
+		var b := Button.new()
+		b.text = m[1] + "\n\n" + m[2]
+		b.custom_minimum_size = Vector2(250, 190)
+		b.add_theme_font_size_override("font_size", 21)
+		b.add_theme_color_override("font_color", Color.WHITE)
+		b.add_theme_color_override("font_outline_color", INKC)
+		b.add_theme_constant_override("outline_size", 6)
+		for st in ["normal", "focus"]:
+			b.add_theme_stylebox_override(st, _card_style(m[3], false))
+		b.add_theme_stylebox_override("hover", _card_style(m[3].lightened(0.1), true))
+		b.add_theme_stylebox_override("pressed", _card_style(m[3].darkened(0.1), true))
+		var mm: String = m[0]
+		b.pressed.connect(func():
+			race.mode = mm
+			Sfx.play("pick", 0.5)
+			show_screen("character"))
+		hb.add_child(b)
+	vb.add_child(hb)
+	_back_button(vb)
+
+func _build_character() -> void:
+	var root := Control.new()
+	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(root)
+	screens["character"] = root
+	var pc := PanelContainer.new()
+	pc.add_theme_stylebox_override("panel", _style(Color(0.12, 0.05, 0.16, 0.72), 22, Color(1, 1, 1, 0.2)))
+	pc.anchor_left = 0.0
+	pc.anchor_top = 0.0
+	pc.anchor_bottom = 1.0
+	pc.offset_left = 18
+	pc.offset_top = 18
+	pc.offset_bottom = -18
+	pc.custom_minimum_size = Vector2(400, 0)
+	root.add_child(pc)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 10)
+	vb.alignment = BoxContainer.ALIGNMENT_CENTER
+	pc.add_child(vb)
+	vb.add_child(_label("Choose your critter", 30, YELLOW, 10))
+	char_name = _label("", 44, Color.WHITE, 12)
+	vb.add_child(char_name)
+	char_blurb = _label("", 17, Color(1, 1, 1, 0.9), 5)
+	char_blurb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	char_blurb.custom_minimum_size = Vector2(360, 0)
+	vb.add_child(char_blurb)
+	char_stats = Control.new()
+	char_stats.custom_minimum_size = Vector2(360, 96)
+	char_stats.draw.connect(_draw_stats)
+	vb.add_child(char_stats)
+	var grid := GridContainer.new()
+	grid.columns = 3
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 8)
+	for i in Critters.SPECIES.size():
+		var sp: Dictionary = Critters.SPECIES[i]
+		var b := _button(sp.name, sp.kart, 18)
+		b.custom_minimum_size = Vector2(116, 46)
+		var idx := i
+		b.pressed.connect(func(): _select(idx))
+		char_buttons.append(b)
+		grid.add_child(b)
+	var gc := CenterContainer.new()
+	gc.add_child(grid)
+	vb.add_child(gc)
+	var hb := _hbox(12)
+	var back := _button("Back", Color("6c5ce7"), 22)
+	back.pressed.connect(go_back)
+	var nxt := _button("Next", Color("ff4f8b"), 26)
+	nxt.custom_minimum_size = Vector2(160, 0)
+	nxt.pressed.connect(func(): Sfx.play("pick", 0.5); show_screen("map"))
+	hb.add_child(back)
+	hb.add_child(nxt)
+	vb.add_child(hb)
+
+func _draw_stats() -> void:
+	var sp: Dictionary = Critters.SPECIES[race.selected]
+	var rows := [["Speed", float(sp.spd)], ["Acceleration", float(sp.acc)], ["Handling", float(sp.hdl)]]
+	var f := font
+	for i in rows.size():
+		var y := 10.0 + i * 30.0
+		char_stats.draw_string_outline(f, Vector2(0, y + 15), rows[i][0], HORIZONTAL_ALIGNMENT_LEFT, -1, 18, 5, INKC)
+		char_stats.draw_string(f, Vector2(0, y + 15), rows[i][0], HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color.WHITE)
+		var bx := 140.0
+		var bw := 210.0
+		char_stats.draw_rect(Rect2(bx, y, bw, 18), Color(1, 1, 1, 0.15))
+		var v := clampf((rows[i][1] - 0.9) / 0.2, 0.08, 1.0)
+		char_stats.draw_rect(Rect2(bx, y, bw * v, 18), sp.kart)
+		char_stats.draw_rect(Rect2(bx, y, bw, 18), INKC, false, 2.0)
+
+func _select(i: int, quiet := false) -> void:
+	race.selected = i
+	if not quiet:
+		race._spawn_racers(true)
+		Sfx.play("get", 0.5)
+	_refresh_char()
+
+func _refresh_char() -> void:
+	var sp: Dictionary = Critters.SPECIES[race.selected]
+	if char_name:
+		char_name.text = sp.name
+		char_blurb.text = sp.blurb
+		char_stats.queue_redraw()
+	for j in char_buttons.size():
+		var b := char_buttons[j]
+		var c: Color = Critters.SPECIES[j].kart
+		var border: Color = YELLOW if j == race.selected else c.darkened(0.35)
+		b.add_theme_stylebox_override("normal", _style(c, 999, border))
+		b.add_theme_stylebox_override("hover", _style(c.lightened(0.1), 999, border))
+
+func _track_preview(pts: PackedVector2Array, col: Color) -> Control:
+	var c := Control.new()
+	c.custom_minimum_size = Vector2(176, 96)
+	c.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	c.draw.connect(func():
+		var sz := c.size
+		var mn := Vector2(INF, INF)
+		var mx := Vector2(-INF, -INF)
+		for q in pts:
+			mn = mn.min(q)
+			mx = mx.max(q)
+		var sc := minf((sz.x - 24.0) / (mx.x - mn.x), (sz.y - 24.0) / (mx.y - mn.y))
+		var off := (sz - (mx - mn) * sc) * 0.5
+		var arr := PackedVector2Array()
+		for k in range(0, pts.size(), 3):
+			arr.append(off + (pts[k] - mn) * sc)
+		arr.append(arr[0])
+		c.draw_polyline(arr, INKC, 11.0, true)
+		c.draw_polyline(arr, col, 6.0, true)
+		c.draw_circle(arr[0], 6.0, YELLOW))
+	return c
+
+func _build_maps() -> void:
+	var o := _overlay()
+	screens["map"] = o
+	var vb: VBoxContainer = o.get_meta("vb")
+	map_title = _label("Choose a track", 42, YELLOW, 14)
+	vb.add_child(map_title)
+	var grid := GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 12)
+	grid.add_theme_constant_override("v_separation", 12)
+	for i in Tracks.THEMES.size():
+		var th: Dictionary = Tracks.THEMES[i]
+		var pc := PanelContainer.new()
+		pc.mouse_filter = Control.MOUSE_FILTER_STOP
+		var cvb := VBoxContainer.new()
+		cvb.add_theme_constant_override("separation", 4)
+		cvb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		pc.add_child(cvb)
+		cvb.add_child(_track_preview(previews[i], Tracks.col(th, "sky_top").lerp(Color.WHITE, 0.35)))
+		var nm := _label(th.name, 19, Color.WHITE, 6)
+		cvb.add_child(nm)
+		var bl := _label(th.blurb, 12, Color(1, 1, 1, 0.85), 4)
+		bl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		bl.custom_minimum_size = Vector2(176, 0)
+		pc.custom_minimum_size = Vector2(206, 0)
+		cvb.add_child(bl)
+		var rec := _label("", 13, YELLOW, 4)
+		rec.name = "Record"
+		cvb.add_child(rec)
+		for ch in cvb.get_children():
+			ch.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var idx := i
+		pc.gui_input.connect(func(ev: InputEvent):
+			if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT and race.mode != "gp":
+				Sfx.play("get", 0.5)
+				race.load_map(idx)
+				_refresh_maps())
+		map_cards.append(pc)
+		grid.add_child(pc)
+	vb.add_child(grid)
+	map_note = _label("", 16, Color.WHITE, 5)
+	vb.add_child(map_note)
+	var hb := _hbox(12)
+	var back := _button("Back", Color("6c5ce7"), 22)
+	back.pressed.connect(go_back)
+	map_start = _button("Start Race", Color("ff4f8b"), 30)
+	map_start.custom_minimum_size = Vector2(280, 62)
+	map_start.pressed.connect(func():
+		history.clear()
+		race.begin_mode(race.mode))
+	hb.add_child(back)
+	hb.add_child(map_start)
+	vb.add_child(hb)
+
+func _refresh_maps() -> void:
+	var gp: bool = race.mode == "gp"
+	map_title.text = "The Critter Cup" if gp else ("Time Trial: choose a track" if race.mode == "tt" else "Choose a track")
+	map_start.text = "Start Grand Prix" if gp else "Start Race"
+	map_note.text = "Four races, one after another. 10, 8, 6, 4, 2, 1 points per race." if gp else "%d laps · %s AI" % [race.laps, race.DIFF_NAME[race.difficulty]] if race.mode != "tt" else "%d laps · no items" % race.laps
+	for i in map_cards.size():
+		var th: Dictionary = Tracks.THEMES[i]
+		var sel: bool = (not gp) and i == race.map_idx
+		map_cards[i].add_theme_stylebox_override("panel", _card_style(Tracks.col(th, "asphalt").lerp(Tracks.col(th, "sky_top"), 0.35), sel or gp))
+		var rec: Label = map_cards[i].find_child("Record", true, false)
+		var r: float = race.record_for(i)
+		if gp:
+			rec.text = "Race %d" % (i + 1)
+		else:
+			rec.text = ("Record " + fmt(r)) if r > 0.0 else "No record yet"
+
+func _build_settings() -> void:
+	var o := _overlay()
+	screens["settings"] = o
+	var vb: VBoxContainer = o.get_meta("vb")
+	vb.add_child(_label("Settings", 46, YELLOW, 14))
+	var st: ConfigFile = race.settings
+	_seg(vb, "Gore:", ["Off", "On", "Extra"], race.gore_level, func(i): race.gore_level = i; race.gore.level = i; race.save_settings())
+	_seg(vb, "Difficulty:", ["Easy", "Normal", "Hard"], race.difficulty, func(i): race.difficulty = i; race.save_settings())
+	_seg(vb, "Laps:", ["1", "2", "3", "4", "5"], race.laps - 1, func(i): race.laps = i + 1; race.save_settings())
+	var vols := [0.0, 0.35, 0.7, 1.0]
+	var vcur := 3
+	for i in vols.size():
+		if absf(vols[i] - Sfx.volume) < 0.05:
+			vcur = i
+	_seg(vb, "Sound:", ["Off", "Low", "Medium", "High"], vcur, func(i): Sfx.volume = vols[i]; st.set_value("audio", "volume", vols[i]); st.save("user://settings.cfg"); Sfx.play("pick"))
+	_seg(vb, "CRT filter:", ["Off", "On"], 1 if st.get_value("video", "crt", true) else 0, func(i): set_crt(i == 1))
+	_seg(vb, "Anti-aliasing:", ["Off", "On"], 1 if st.get_value("video", "aa", true) else 0, func(i): set_aa(i == 1))
+	_seg(vb, "Shadows:", ["Off", "On"], 1 if st.get_value("video", "shadows", true) else 0, func(i): set_shadows(i == 1))
+	_back_button(vb)
+
+# ------------------------------------------------------------------ flow
 func on_race_start() -> void:
-	menu.visible = false
+	for k in screens:
+		screens[k].visible = false
 	results.visible = false
 	screen_blood.clear()
 
@@ -274,39 +511,121 @@ func to_menu() -> void:
 	race.paused = false
 	results.visible = false
 	pause_panel.visible = false
-	menu.visible = true
 	race.gore.reset()
 	for p in race.projectiles:
 		p.node.queue_free()
 	race.projectiles.clear()
+	race.mode = "quick" if race.mode == "gp" else race.mode
 	race._spawn_racers(true)
+	history.clear()
+	show_screen("title", false)
 
 func show_pause(on: bool) -> void:
 	pause_panel.visible = on
 
+func _build_results() -> void:
+	results = _overlay()
+	results.visible = false
+	var vb: VBoxContainer = results.get_meta("vb")
+	res_title = _label("Results", 44, YELLOW, 14)
+	vb.add_child(res_title)
+	var pc := PanelContainer.new()
+	pc.add_theme_stylebox_override("panel", _style(Color(0, 0, 0, 0.35), 16, Color(1, 1, 1, 0.15)))
+	res_grid = GridContainer.new()
+	res_grid.add_theme_constant_override("h_separation", 26)
+	res_grid.add_theme_constant_override("v_separation", 4)
+	pc.add_child(res_grid)
+	vb.add_child(pc)
+	res_buttons = _hbox(14)
+	vb.add_child(res_buttons)
+
+func _build_pause() -> void:
+	pause_panel = _overlay()
+	pause_panel.visible = false
+	var vb: VBoxContainer = pause_panel.get_meta("vb")
+	vb.add_child(_label("Paused", 48, YELLOW, 14))
+	var hb := _hbox(14)
+	var res := _button("Resume")
+	res.pressed.connect(func(): race.toggle_pause())
+	var quit := _button("Quit to Menu", Color("6c5ce7"))
+	quit.pressed.connect(func(): race.paused = false; pause_panel.visible = false; to_menu())
+	hb.add_child(res)
+	hb.add_child(quit)
+	vb.add_child(hb)
+
+func _res_row(cells: Array, col: Color, size := 22) -> void:
+	for c in cells:
+		res_grid.add_child(_label(str(c), size, col, 6))
+
+func _res_button(text: String, col: Color, cb: Callable) -> void:
+	var b := _button(text, col)
+	b.pressed.connect(cb)
+	res_buttons.add_child(b)
+
 func show_results() -> void:
 	for c in res_grid.get_children():
 		c.queue_free()
-	var rows: Array = []
-	for k in race.order:
-		var tm: float = k.finish_time if k.finished else race.race_time + float(race.LAPS * race.world.N - k.prog) * 0.5 / 15.5
-		rows.append({"k": k, "t": tm, "est": not k.finished})
-	rows.sort_custom(func(a, b): return a.t < b.t)
-	for h in ["#", "Racer", "Time", "Splats" if race.gore_level > 0 else "Bonks"]:
-		res_grid.add_child(_label(h, 16, Color(1, 1, 1, 0.7), 4))
+	for c in res_buttons.get_children():
+		c.queue_free()
+	var rows: Array = race.final_rows()
 	var place := 0
 	for i in rows.size():
-		var r: Dictionary = rows[i]
-		var k: Kart = r.k
-		var col := YELLOW if k.is_player else Color.WHITE
-		if k.is_player:
+		if rows[i].k.is_player:
 			place = i + 1
-		res_grid.add_child(_label(ordinal(i + 1), 22, col, 6))
-		res_grid.add_child(_label(k.sp.name + (" (you)" if k.is_player else ""), 22, col, 6))
-		res_grid.add_child(_label(fmt(r.t) + (" *" if r.est else ""), 22, col, 6))
-		res_grid.add_child(_label(str(k.kills), 22, col, 6))
-	res_title.text = "Champion Critter!" if place == 1 else "You finished " + ordinal(place)
+	var tname: String = race.theme().name
+	match race.mode:
+		"tt":
+			res_grid.columns = 2
+			var P: Kart = race.player
+			res_title.text = "NEW RECORD!" if race.tt_record else "Time Trial"
+			_res_row(["Track", tname], Color.WHITE)
+			_res_row(["Your time", fmt(P.finish_time)], YELLOW)
+			_res_row(["Best lap", fmt(P.best_lap)], Color.WHITE)
+			_res_row(["Record", fmt(race.record_for(race.map_idx))], YELLOW if race.tt_record else Color.WHITE)
+			_res_button("Retry", Color("ff4f8b"), func(): results.visible = false; race.start_race())
+			_res_button("Change Track", Color("38b6a3"), func(): results.visible = false; race.state = "menu"; show_screen("map", false))
+			_res_button("Main Menu", Color("6c5ce7"), func(): to_menu())
+		"gp":
+			res_grid.columns = 4
+			res_title.text = "Race %d of 4: %s" % [race.gp_round + 1, tname]
+			_res_row(["#", "Racer", "Points", "Total"], Color(1, 1, 1, 0.7), 16)
+			for e in race.gp_last:
+				var sp: Dictionary = Critters.SPECIES[e.sp_idx]
+				var me: bool = e.sp_idx == race.selected
+				_res_row([ordinal(e.place), sp.name + (" (you)" if me else ""), "+%d" % e.pts, race.gp_points[e.sp_idx]], YELLOW if me else Color.WHITE)
+			if race.gp_round < Tracks.THEMES.size() - 1:
+				_res_button("Next Race", Color("ff4f8b"), func(): results.visible = false; race.next_gp_race())
+			else:
+				_res_button("Final Standings", Color("f5a623"), func(): _show_gp_final())
+			_res_button("Quit", Color("6c5ce7"), func(): to_menu())
+		_:
+			res_grid.columns = 4
+			res_title.text = "Champion Critter!" if place == 1 else "You finished " + ordinal(place)
+			_res_row(["#", "Racer", "Time", "Splats" if race.gore_level > 0 else "Bonks"], Color(1, 1, 1, 0.7), 16)
+			for i in rows.size():
+				var k: Kart = rows[i].k
+				_res_row([ordinal(i + 1), k.sp.name + (" (you)" if k.is_player else ""), fmt(rows[i].t) + (" *" if rows[i].est else ""), k.kills], YELLOW if k.is_player else Color.WHITE)
+			_res_button("Race Again", Color("ff4f8b"), func(): results.visible = false; race.start_race())
+			_res_button("Change Track", Color("38b6a3"), func(): results.visible = false; race.state = "menu"; show_screen("map", false))
+			_res_button("Main Menu", Color("6c5ce7"), func(): to_menu())
 	results.visible = true
+
+func _show_gp_final() -> void:
+	for c in res_grid.get_children():
+		c.queue_free()
+	for c in res_buttons.get_children():
+		c.queue_free()
+	var idx: Array = range(Critters.SPECIES.size())
+	idx.sort_custom(func(a, b): return race.gp_points[a] > race.gp_points[b])
+	var winner: Dictionary = Critters.SPECIES[idx[0]]
+	res_title.text = ("You win the Critter Cup!" if idx[0] == race.selected else winner.name + " wins the Critter Cup!")
+	res_grid.columns = 3
+	_res_row(["#", "Racer", "Points"], Color(1, 1, 1, 0.7), 16)
+	for i in idx.size():
+		var sp: Dictionary = Critters.SPECIES[idx[i]]
+		var me: bool = idx[i] == race.selected
+		_res_row([ordinal(i + 1), sp.name + (" (you)" if me else ""), race.gp_points[idx[i]]], YELLOW if me else RANKCOL[mini(i, 2)] if i < 3 else Color.WHITE, 26 if i == 0 else 22)
+	_res_button("Main Menu", Color("6c5ce7"), func(): to_menu())
 
 func add_screen_blood(n: int, big: bool) -> void:
 	if race.gore_level == 0:
@@ -484,10 +803,15 @@ func _draw() -> void:
 	var P: Kart = race.player
 	var CX := W / 2.0
 	var RX := W - 10.0
-	T("LAP %d/%d" % [clampi(P.lap + 1, 1, race.LAPS), race.LAPS], 10, 20, 15)
+	T("LAP %d/%d" % [clampi(P.lap + 1, 1, race.laps), race.laps], 10, 20, 15)
 	T(fmt(0.0 if race.state == "countdown" else (P.finish_time if P.finished else race.race_time)), 10, 36, 12, HORIZONTAL_ALIGNMENT_LEFT, YELLOW)
 	if P.last_lap >= 0.0:
 		T("last %s · best %s" % [fmt(P.last_lap), fmt(P.best_lap)], 10, 47, 7)
+	if race.mode == "tt":
+		var rec: float = race.record_for(race.map_idx)
+		T("record " + (fmt(rec) if rec > 0.0 else "none yet"), 10, 58, 7, HORIZONTAL_ALIGNMENT_LEFT, YELLOW)
+	elif race.mode == "gp":
+		T("Grand Prix · race %d/4" % (race.gp_round + 1), 10, 58, 7, HORIZONTAL_ALIGNMENT_LEFT, YELLOW)
 	for i in race.order.size():
 		var k: Kart = race.order[i]
 		var y: float = 62.0 + i * 11.0
