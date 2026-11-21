@@ -59,13 +59,22 @@ var best_lap := -1.0
 var kills := 0
 var kos := 0
 var off_t := 0.0
-var drift_t := 0.0
+var drift_t := 0.0       # mini-turbo charge (MK8 style tiers)
+var drift_dir := 0       # -1 / +1 while drifting, 0 otherwise
+var drift_tier := 0      # 0 none, 1 blue, 2 orange, 3 pink
+var drift_prev := false  # drift button held last frame
+var hop_t := 0.0         # time since the hop (direction can be chosen during it)
+const TIER_AT := [0.0, 0.85, 1.9, 3.1]
+const TIER_BOOST := [0.0, 0.5, 1.0, 1.6]
+const TIER_COL := [Color("f4efe6"), Color("5ec8ff"), Color("ffa040"), Color("ff6fd8")]
 var skill := 1.0
 var skill_mul := 1.0
 var lane_off := 0.0
 var ai_t := 0.0
 var stuck_t := 0.0
 var stuck_rev := 0.0
+var ai_drift := false
+var mt_count := [0, 0, 0, 0]  # mini-turbos by tier (stats)
 var steer_vis := 0.0
 var drift_vis := 0.0
 var squash := 0.0
@@ -189,22 +198,21 @@ func step(dt: float, inp: Dictionary) -> void:
 	else:
 		speed -= speed * 1.1 * dt
 	var turn := 2.3 * float(sp.hdl) * clampf(speed / 6.25, -1.0, 1.0) * (1.0 if on_ground else 0.4)
-	if inp.get("drift", false) and st != 0.0 and speed > 7.5 and on_ground and spin <= 0.0:
-		turn *= 1.6
-		speed *= 1.0 - 0.22 * dt
-		drift_t += dt
-		if randf() < 0.6:
-			var col := Color("ff78c8") if drift_t > 0.9 else Color("78c8ff")
-			race.gore.spark(Vector3(pos.x, z + 0.15, pos.y) - Vector3(cos(a), 0, sin(a)) * 0.9, col)
+	_drift(dt, inp, thr, st, surf)
+	if drift_dir != 0:
+		# Locked into the drift: the stick only tightens (into the turn) or
+		# widens (away from it); you can never straighten out or turn the other way.
+		var into := st * float(drift_dir)
+		var tight := lerpf(0.25, 1.55, (into + 1.0) * 0.5)
+		a += float(drift_dir) * 2.3 * float(sp.hdl) * tight * dt
+		# the back end swings out: a little sideways slide to the outside
+		var outside := Vector2(sin(a), -cos(a)) * float(drift_dir)
+		pos += outside * speed * 0.07 * dt
+		steer_vis += (float(drift_dir) * (0.55 + 0.35 * into) - steer_vis) * minf(1.0, 10.0 * dt)
 	else:
-		if drift_t > 0.9:
-			boost = maxf(boost, 0.7)
-			if is_player:
-				Sfx.play("boost")
-		drift_t = 0.0
-	a += st * turn * dt
-	steer_vis += (st - steer_vis) * minf(1.0, 10.0 * dt)
-	drift_vis += ((st * 0.45 if drift_t > 0.0 else 0.0) - drift_vis) * minf(1.0, 8.0 * dt)
+		a += st * turn * dt
+		steer_vis += (st - steer_vis) * minf(1.0, 10.0 * dt)
+	drift_vis += ((float(drift_dir) * (0.42 + 0.12 * st * float(drift_dir))) - drift_vis) * minf(1.0, 9.0 * dt)
 	if squash > 0.0:
 		squash = maxf(0.0, squash - dt * 5.0)
 	# move + fences
@@ -287,6 +295,60 @@ func step(dt: float, inp: Dictionary) -> void:
 	if off_t > (8.0 if is_player else 3.5):
 		respawn()
 	_update_seg()
+
+## Mario Kart 8 style drift: press to hop, hold a direction to lock the drift,
+## steer into the turn to charge faster. Sparks go blue -> orange -> pink;
+## let go for a mini, super or ultra mini-turbo. Braking cancels it.
+func _drift(dt: float, inp: Dictionary, thr: float, st: float, surf: int) -> void:
+	var held: bool = inp.get("drift", false) and spin <= 0.0
+	var pressed := held and not drift_prev
+	drift_prev = held
+	hop_t += dt
+	if pressed and on_ground and speed > 5.0:
+		# the hop
+		on_ground = false
+		vz = 6.0
+		z += 0.02
+		hop_t = 0.0
+		squash = 0.35
+		if absf(st) > 0.25:
+			drift_dir = 1 if st > 0.0 else -1
+			drift_t = 0.0
+			drift_tier = 0
+	# a direction can still be picked while in the air from the hop
+	if held and drift_dir == 0 and hop_t < 0.3 and absf(st) > 0.25 and speed > 5.0:
+		drift_dir = 1 if st > 0.0 else -1
+		drift_t = 0.0
+		drift_tier = 0
+	if drift_dir == 0:
+		return
+	var cancel := thr < 0.0 or speed < 4.0 or spin > 0.0
+	if not held or cancel:
+		if not cancel and drift_tier > 0:
+			boost = maxf(boost, TIER_BOOST[drift_tier])
+			mt_count[drift_tier] += 1
+			if is_player:
+				Sfx.play("boost", 0.6 + 0.2 * drift_tier)
+		drift_dir = 0
+		drift_t = 0.0
+		drift_tier = 0
+		return
+	speed *= 1.0 - 0.05 * dt
+	# charge: only on the road, faster when steering into the turn
+	if on_ground and surf != 0:
+		var into := maxf(0.0, st * float(drift_dir))
+		drift_t += dt * (1.0 + 1.1 * into)
+	while drift_tier < 3 and drift_t >= TIER_AT[drift_tier + 1]:
+		drift_tier += 1
+		if is_player:
+			Sfx.play("beep_hi" if drift_tier == 3 else "beep", 0.35)
+	if on_ground and randf() < 0.85:
+		var back := Vector3(cos(a), 0, sin(a)) * 0.85
+		var sideways := Vector3(-sin(a), 0, cos(a)) * 0.55
+		var col: Color = TIER_COL[drift_tier]
+		for sgn: float in [-1.0, 1.0]:
+			if drift_tier > 0 or randf() < 0.35:
+				race.gore.spark(Vector3(pos.x, z + 0.12, pos.y) - back + sideways * sgn, col)
 
 func _update_seg() -> void:
 	var N := world.N
@@ -371,7 +433,20 @@ func ai_input(dt: float) -> Dictionary:
 			stuck_rev = 0.8
 	else:
 		stuck_t = 0.0
-	return {"thr": 0.0 if (absf(d) > 1.2 and speed > 10.0) else 1.0, "steer": clampf(d * 2.4, -1.0, 1.0), "drift": false}
+	# drift through proper corners, like the player would
+	var ahead := (seg + 36) % N
+	var bend := adiff(atan2(world.T[seg].y, world.T[seg].x), atan2(world.T[ahead].y, world.T[ahead].x))
+	if drift_dir == 0:
+		ai_drift = absf(bend) > 0.7 and speed > 11.0 and d * bend > 0.0 and absf(d) < 0.6 and randf() < 0.5 * skill + 0.1
+	elif absf(bend) < 0.18 or bend * float(drift_dir) < 0.0 or d * float(drift_dir) < -0.2:
+		ai_drift = false
+	# don't slide wide off an open (lakeside) edge
+	if absf(nr.y) > 3.0 and world.is_open(int(nr.x), nr.y):
+		ai_drift = false
+	var sv := clampf(d * 2.4, -1.0, 1.0)
+	if ai_drift and drift_dir == 0:
+		sv = signf(bend)
+	return {"thr": 0.0 if (absf(d) > 1.2 and speed > 10.0 and not ai_drift) else 1.0, "steer": sv, "drift": ai_drift}
 
 # ------------------------------------------------------------------ visuals
 func _set_wreck(on: bool) -> void:
@@ -389,6 +464,9 @@ func knock_out() -> void:
 	ko_pos = Vector3(pos.x, z, pos.y)
 	speed = 0.0
 	boost = 0.0
+	drift_dir = 0
+	drift_t = 0.0
+	drift_tier = 0
 	items = [null, null]
 	roulette = 0.0
 	shield = 0.0

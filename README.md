@@ -33,7 +33,7 @@ It uses the **Compatibility** renderer so the same project runs on desktop, phon
 |---|---|---|
 | Drive | W / Up (gas), S / Down (brake) | Always drives itself; hold **BRAKE** |
 | Steer | A D / Left Right | Touch anywhere on the left half and slide |
-| Drift (hold for a mini-boost) | Shift / C | **DRIFT** |
+| Drift: press to hop, hold + steer to slide; release on blue / orange / pink sparks for a mini / super / ultra mini-turbo. Steer into the bend to charge faster and tighten the line, away to widen it; braking cancels | Shift / C | **DRIFT** |
 | Use item | Space / X | **ITEM** |
 | Aim item forward / back | hold Up / Down while firing | push the joystick up / down |
 | Swap item slot | Q / Tab | tap a slot at the top |

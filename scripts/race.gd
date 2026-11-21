@@ -541,7 +541,7 @@ func _process(dt: float) -> void:
 				if autotest:
 					var line := ""
 					for k in order:
-						line += "%s lap=%d fin=%s t=%.1f kills=%d kos=%d | " % [k.sp.name, k.lap, k.finished, k.finish_time, k.kills, k.kos]
+						line += "%s lap=%d fin=%s t=%.1f kills=%d kos=%d mt=%s | " % [k.sp.name, k.lap, k.finished, k.finish_time, k.kills, k.kos, k.mt_count]
 					print("RESULT [%s %s] " % [mode, theme().name], line, " decals=", gore.dec_n, " gp=", gp_points, " rec=", tt_record)
 					if mode == "gp" and gp_round < Tracks.THEMES.size() - 1:
 						next_gp_race()

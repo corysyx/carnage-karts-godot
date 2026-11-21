@@ -260,9 +260,9 @@ func _build_title() -> void:
 	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	help.custom_minimum_size = Vector2(700, 0)
 	if touch_mode:
-		help.text = "Karts drive themselves. Touch the left side to steer (push up/down to aim items). ITEM fires, tap the slots up top to swap, hold DRIFT round corners."
+		help.text = "Karts drive themselves. Touch the left side to steer (push up/down to aim items). ITEM fires, tap the slots up top to swap, DRIFT hops: hold it and steer into the bend until the sparks turn blue, orange then pink, then let go to boost."
 	else:
-		help.text = "W / Up gas · S / Down brake · A D / Left Right steer · Shift drift · Space use item (hold Up/Down to aim) · Q swap item · R back to track · P pause · M mute"
+		help.text = "W / Up gas · S / Down brake · A D / Left Right steer · Shift hop/drift (steer into the bend for blue → orange → pink sparks, release to boost) · Space use item (hold Up/Down to aim) · Q swap item · R back to track · P pause · M mute"
 	vb.add_child(help)
 
 func _build_modes() -> void:
@@ -857,8 +857,9 @@ func _draw() -> void:
 	else:
 		T("%d" % roundi(absf(P.speed) * 3.6), RX, 212, 18, HORIZONTAL_ALIGNMENT_RIGHT, Color("ff8ad0") if P.boost > 0.0 else Color.WHITE)
 		T("km/h", RX, 220, 6, HORIZONTAL_ALIGNMENT_RIGHT)
-	if P.drift_t > 0.9:
-		T("BOOST READY!", CX if touch_mode else RX, 188, 7, HORIZONTAL_ALIGNMENT_CENTER if touch_mode else HORIZONTAL_ALIGNMENT_RIGHT, Color("ff8ad0"))
+	if P.drift_tier > 0:
+		var tn: String = ["", "MINI-TURBO", "SUPER MINI-TURBO", "ULTRA MINI-TURBO!"][P.drift_tier]
+		T(tn, CX if touch_mode else RX, 188, 7, HORIZONTAL_ALIGNMENT_CENTER if touch_mode else HORIZONTAL_ALIGNMENT_RIGHT, Kart.TIER_COL[P.drift_tier])
 	# centre messages
 	if race.state == "countdown":
 		var n := ceili(race.cd)
