@@ -43,6 +43,7 @@ var start_ms := 0
 var brokers: Array = []
 var bi := 0
 var sub_ms := 0
+var connect_sent := false
 var last_ms := 0
 
 func start(broker_list: Array, room_code: String, as_server: bool) -> Error:
@@ -66,6 +67,7 @@ func _try(i: int) -> Error:
 	ws.outbound_buffer_size = 1 << 20
 	mqtt_up = false
 	sub_ok = false
+	connect_sent = false
 	keep_t = 0.0
 	hello_t = 0.0
 	rx = PackedByteArray()
@@ -263,8 +265,9 @@ func _poll() -> void:
 	ws.poll()
 	var st := ws.get_ready_state()
 	if st == WebSocketPeer.STATE_OPEN:
-		if not mqtt_up and keep_t == 0.0:
-			keep_t = 0.001
+		if not connect_sent:
+			connect_sent = true
+			keep_t = 0.0
 			_dbg("socket open, protocol '%s'" % ws.get_selected_protocol())
 			_mqtt_connect()
 		while ws.get_available_packet_count() > 0:
