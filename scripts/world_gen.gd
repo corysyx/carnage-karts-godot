@@ -93,6 +93,8 @@ func build(th: Dictionary) -> void:
 	if not lay.is_empty():
 		_build_field()
 	_gen_open_sides()
+	_build_hgrid()
+	_place_trees()
 	_build_terrain()
 	_build_road()
 	_build_fences()
@@ -488,13 +490,33 @@ func _terrain_vertex_h(x: float, z: float) -> float:
 		return t0
 	return lerpf(t0, h, smoothstep(0.0, BLEND, lat - WALL_OUT - 0.4))
 
-func _build_terrain() -> void:
+func _build_hgrid() -> void:
 	gnx = int(2.0 * ext_x / grid) + 1
 	gn = int(2.0 * ext_z / grid) + 1
 	hgrid.resize(gnx * gn)
 	for iz in gn:
 		for ix in gnx:
 			hgrid[iz * gnx + ix] = _terrain_vertex_h(-ext_x + ix * grid, -ext_z + iz * grid)
+
+## Soft shade painted into the ground under trees (0 = none, 1 = full).
+## Trees don't cast real-time shadows: thousands of them made big dark patches
+## that popped in near the camera.
+func _tree_shade(x: float, z: float) -> float:
+	var cx := floori(x / SHADE_CELL)
+	var cz := floori(z / SHADE_CELL)
+	var best := 0.0
+	for dz in range(-1, 2):
+		for dx in range(-1, 2):
+			var key := Vector2i(cx + dx, cz + dz)
+			if not shade_cells.has(key):
+				continue
+			for t: Vector3 in shade_cells[key]:
+				var d := Vector2(x - t.x, z - t.y).length()
+				best = maxf(best, 1.0 - smoothstep(t.z * 0.45, t.z, d))
+	return best
+
+func _build_terrain() -> void:
+	var shade_tint := Color(0.6, 0.58, 0.78)
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var grass_a := _c("grass_a")
@@ -529,11 +551,19 @@ func _build_terrain() -> void:
 					col = rock.lerp(snow, clampf((avg - rock_h) / 10.0, 0.0, 0.5))
 				else:
 					col = grass_a if detail.get_noise_2d(cx, cz) < 0.1 else grass_b
+				var sh := _tree_shade(cx, cz)
+				if sh > 0.0:
+					col = col.lerp(col * shade_tint, 0.6 * sh)
 				_tri_up(st, a, b, c, col)
 	var mi := MeshInstance3D.new()
 	mi.mesh = st.commit()
 	var tm := toon(Color.WHITE, true)
-	tm.set_shader_parameter("rim_ink", 0.16)
+	# No rim ink on the ground: from the low kart camera, dips behind the
+	# fences are seen nearly edge-on and filled with dark ink. The depth-ink
+	# pass already outlines hill silhouettes. Shadowed slopes are softer too.
+	tm.set_shader_parameter("rim_ink", 0.0)
+	tm.set_shader_parameter("shadow_band", 0.85)
+	tm.set_shader_parameter("shadow_tint", Color(0.78, 0.74, 0.92))
 	mi.material_override = tm
 	mi.name = "Terrain"
 	add_child(mi)
@@ -723,13 +753,19 @@ func _build_water() -> void:
 	add_child(w)
 
 # ------------------------------------------------------------------ trees
-func _build_trees() -> void:
-	var trunks: Array[Transform3D] = []
-	var pines: Array[Transform3D] = []
-	var rounds: Array[Transform3D] = []
-	var candy: Array[Transform3D] = []
-	var sticks: Array[Transform3D] = []
-	var bushes: Array[Transform3D] = []
+const SHADE_CELL := 4.0
+var shade_cells := {}          # Vector2i -> Array of Vector3(x, z, radius)
+var trunks: Array[Transform3D] = []
+var pines: Array[Transform3D] = []
+var rounds: Array[Transform3D] = []
+var candy: Array[Transform3D] = []
+var sticks: Array[Transform3D] = []
+var bushes: Array[Transform3D] = []
+
+func _place_trees() -> void:
+	# shade sits a little away from the sun, like a real shadow would
+	var ld := Basis.from_euler(Vector3(deg_to_rad(-52.0), deg_to_rad(-35.0), 0.0)) * Vector3(0, 0, -1)
+	var sun_off := Vector2(ld.x, ld.z).normalized()
 	var placed := 0
 	var tries := 0
 	var want := 520
@@ -757,6 +793,11 @@ func _build_trees() -> void:
 			continue
 		placed += 1
 		var s := rng.randf_range(0.8, 1.35)
+		var sc := Vector2(x, z) + sun_off * 0.9 * s
+		var key := Vector2i(floori(sc.x / SHADE_CELL), floori(sc.y / SHADE_CELL))
+		if not shade_cells.has(key):
+			shade_cells[key] = []
+		shade_cells[key].append(Vector3(sc.x, sc.y, 2.1 * s))
 		var yaw := Basis(Vector3.UP, rng.randf() * TAU)
 		var kind := rng.randf()
 		var tw: Dictionary = theme.trees
@@ -774,6 +815,8 @@ func _build_trees() -> void:
 			candy.append(Transform3D(yaw.scaled(Vector3(s, s, s)), Vector3(x, h + 2.1 * s, z)))
 		else:
 			bushes.append(Transform3D(yaw.scaled(Vector3(s * 1.3, s * 0.8, s * 1.3)), Vector3(x, h + 0.35 * s, z)))
+
+func _build_trees() -> void:
 	var trunk := CylinderMesh.new()
 	trunk.top_radius = 0.16; trunk.bottom_radius = 0.22; trunk.height = 1.2; trunk.radial_segments = 6
 	var pine := CylinderMesh.new()
@@ -786,12 +829,13 @@ func _build_trees() -> void:
 	stick.top_radius = 0.1; stick.bottom_radius = 0.12; stick.height = 1.8; stick.radial_segments = 6
 	var bush := SphereMesh.new()
 	bush.radius = 0.8; bush.height = 1.4; bush.radial_segments = 7; bush.rings = 4
-	_multimesh(trunk, trunks, toon(_c("trunk"), true, 0.03), "Trunks")
-	_multimesh(pine, pines, toon(_c("pine_col"), true, 0.05), "Pines")
-	_multimesh(ball, rounds, toon(_c("round_col"), true, 0.05), "RoundTrees")
-	_multimesh(stick, sticks, toon(Color("fff4fa"), true, 0.03), "CandySticks")
-	_multimesh(cball, candy, toon(_c("candy_col"), true, 0.05), "CandyTrees")
-	_multimesh(bush, bushes, toon(_c("bush_col"), true, 0.04), "Bushes")
+	for m in [_multimesh(trunk, trunks, toon(_c("trunk"), true, 0.03), "Trunks"),
+			_multimesh(pine, pines, toon(_c("pine_col"), true, 0.05), "Pines"),
+			_multimesh(ball, rounds, toon(_c("round_col"), true, 0.05), "RoundTrees"),
+			_multimesh(stick, sticks, toon(Color("fff4fa"), true, 0.03), "CandySticks"),
+			_multimesh(cball, candy, toon(_c("candy_col"), true, 0.05), "CandyTrees"),
+			_multimesh(bush, bushes, toon(_c("bush_col"), true, 0.04), "Bushes")]:
+		m.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 # ------------------------------------------------------------------ distant scenery
 func _build_scenery() -> void:
