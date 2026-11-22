@@ -581,30 +581,48 @@ func _build_road() -> void:
 		for sd: float in [-1.0, 1.0]:
 			var side := 1 if sd > 0.0 else 0
 			var open := open_side[i * 2 + side] == 1
-			var sections := [
-				[0.0, HALF - KERB, 0.0, asphalt if (i >> 3) & 1 else asphalt2],
-				[HALF - KERB - 0.05, HALF - KERB + 0.03, 0.075, ink],
-				[HALF - KERB, HALF, 0.06, red if (i >> 2) & 1 else white],
-				[HALF - 0.02, HALF + 0.07, 0.075, ink],
-				[HALF, WALL_IN, 0.0, verge],
+			# One continuous cross-section from the centre line outwards: the kerb
+			# is a low ramp rising out of the road, its dark edges are its slopes,
+			# so there are no floating strips or gaps to see through.
+			var kc: Color = red if (i >> 2) & 1 else white
+			var prof := [
+				[0.0, 0.0, asphalt if (i >> 3) & 1 else asphalt2],
+				[HALF - KERB - 0.04, 0.0, ink],
+				[HALF - KERB + 0.08, 0.07, kc],
+				[HALF - 0.07, 0.07, ink],
+				[HALF + 0.05, 0.0, verge],
 			]
 			if open:
-				sections.append([WALL_IN - 0.45, WALL_IN, 0.02, yellow if (i >> 1) & 1 else dark])
+				prof.append([WALL_IN - 0.45, 0.0, yellow if (i >> 1) & 1 else dark])
+				prof.append([WALL_IN, 0.0, null])
 			else:
-				sections.append([WALL_IN, WALL_OUT + 0.4, 0.0, verge])
-			if i < 3 or i > N - 3:
-				sections[0][3] = white if ((i >> 1) + int(side)) & 1 else Color("2a2234")
-			for s in sections:
-				var o0: float = s[0]
-				var o1: float = s[1]
-				var y: float = s[2]
-				var c: Color = s[3]
+				prof.append([WALL_OUT + 0.4, 0.0, null])
+			for k in prof.size() - 1:
+				var o0: float = prof[k][0]
+				var o1: float = prof[k + 1][0]
+				var y0: float = prof[k][1]
+				var y1: float = prof[k + 1][1]
+				var c: Color = prof[k][2]
 				var a := P[i] + na * o0 * sd
 				var b := P[i] + na * o1 * sd
 				var cc := P[j] + nb * o1 * sd
 				var d := P[j] + nb * o0 * sd
-				_quad_up(st, Vector3(a.x, TH[i] + y, a.y), Vector3(b.x, TH[i] + y, b.y),
-					Vector3(cc.x, TH[j] + y, cc.y), Vector3(d.x, TH[j] + y, d.y), c)
+				_quad_up(st, Vector3(a.x, TH[i] + y0, a.y), Vector3(b.x, TH[i] + y1, b.y),
+					Vector3(cc.x, TH[j] + y1, cc.y), Vector3(d.x, TH[j] + y0, d.y), c)
+		# chequered start/finish line: 2 rows x 10 squares across the road
+		if i >= N - 2 or i < 2:
+			var row := 0 if i >= N - 2 else 1
+			var w := (HALF - KERB - 0.04) * 2.0
+			for col in 10:
+				var l0 := -w * 0.5 + w * col / 10.0
+				var l1 := -w * 0.5 + w * (col + 1) / 10.0
+				var sq: Color = white if ((col + row) & 1) == 0 else Color("1e1828")
+				var a3 := P[i] + na * l0
+				var b3 := P[i] + na * l1
+				var c3 := P[j] + nb * l1
+				var d3 := P[j] + nb * l0
+				_quad_up(st, Vector3(a3.x, TH[i] + 0.015, a3.y), Vector3(b3.x, TH[i] + 0.015, b3.y),
+					Vector3(c3.x, TH[j] + 0.015, c3.y), Vector3(d3.x, TH[j] + 0.015, d3.y), sq)
 		# centre dashes
 		if (i >> 3) & 1 and i > 4 and i < N - 4:
 			var a2 := P[i] + na * -0.12
