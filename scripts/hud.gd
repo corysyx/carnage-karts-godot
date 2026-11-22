@@ -257,6 +257,12 @@ func _build_title() -> void:
 	title.add_theme_constant_override("shadow_offset_y", 6)
 	vb.add_child(title)
 	vb.add_child(_label("Six cute critters. Very messy finishes.", 20, Color.WHITE, 6))
+	# build stamp, bottom-right: shows which update this device is running
+	var ver := _label("update " + BuildInfo.STAMP + " UTC", 13, Color(1, 1, 1, 0.55), 4)
+	ver.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	ver.position -= Vector2(12, 8)
+	ver.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	o.add_child(ver)
 	vb.add_child(Control.new())
 	for item in [["Play", Color("ff4f8b"), func(): show_screen("mode")], ["Play Online", Color("f5a623"), func(): show_screen("online")], ["Settings", Color("6c5ce7"), func(): show_screen("settings")]]:
 		var b := _button(item[0], item[1], 32)
