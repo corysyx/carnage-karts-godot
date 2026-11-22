@@ -223,6 +223,11 @@ func show_screen(n: String, remember := true) -> void:
 		_refresh_char()
 	if n == "lobby":
 		_refresh_lobby()
+	if n == "online" and name_edit:
+		# the pad types into the name box until a name is set, then the code box
+		var t: LineEdit = name_edit if name_edit.text == "" else code_edit
+		t.grab_focus()
+		pad_target = t
 
 func go_back() -> void:
 	Sfx.play("get", 0.4)
@@ -619,7 +624,7 @@ func show_results() -> void:
 			_res_row(["#", "Racer", "Time", "Splats" if race.gore_level > 0 else "Bonks"], Color(1, 1, 1, 0.7), 16)
 			for i in rows.size():
 				var k: Kart = rows[i].k
-				_res_row([ordinal(i + 1), k.sp.name + (" (you)" if k.is_player else (" (%s)" % race.net.name_of(k.net_owner) if k.net_owner != 0 else "")), fmt(rows[i].t) + (" *" if rows[i].est else ""), k.kills], YELLOW if k.is_player else Color.WHITE)
+				_res_row([ordinal(i + 1), k.sp.name + (" (you)" if k.is_player else (" (%s)" % race.net.tag_of(k.net_owner) if k.net_owner != 0 else "")), fmt(rows[i].t) + (" *" if rows[i].est else ""), k.kills], YELLOW if k.is_player else Color.WHITE)
 			if race.online():
 				if race.net.is_host:
 					_res_button("Back to Lobby", Color("ff4f8b"), func(): race.net.back_to_lobby())
@@ -841,7 +846,10 @@ func _draw() -> void:
 		C(14, y - 3, 4.6, INKC)
 		C(14, y - 3, 3.6, k.sp.fur)
 		C(14, y - 3, 1.6, k.sp.kart)
-		T("%d. %s%s" % [i + 1, k.sp.name, " ☠" if (k.ko > 0.0 and not k.drown) else ""], 22, y, 7.5, HORIZONTAL_ALIGNMENT_LEFT, YELLOW if k.is_player else Color.WHITE)
+		var who: String = k.sp.name
+		if race.online() and k.net_owner != 0 and not k.is_player:
+			who += " (%s)" % race.net.tag_of(k.net_owner)
+		T("%d. %s%s" % [i + 1, who, " ☠" if (k.ko > 0.0 and not k.drown) else ""], 22, y, 7.5, HORIZONTAL_ALIGNMENT_LEFT, YELLOW if k.is_player else Color.WHITE)
 	var r := P.rank + 1
 	T(ordinal(r), RX, 42, 36, HORIZONTAL_ALIGNMENT_RIGHT, RANKCOL[r - 1])
 	T("of %d" % race.racers.size(), RX, 54, 8, HORIZONTAL_ALIGNMENT_RIGHT)
@@ -966,6 +974,21 @@ func _process(dt: float) -> void:
 # ------------------------------------------------------------------ online
 var online_status: Label
 var code_edit: LineEdit
+var name_edit: LineEdit
+var pad_target: LineEdit
+
+func _code_box(ph: String, maxlen: int, sz: Vector2, fs: int) -> LineEdit:
+	var e := LineEdit.new()
+	e.placeholder_text = ph
+	e.max_length = maxlen
+	e.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	e.custom_minimum_size = sz
+	e.add_theme_font_size_override("font_size", fs)
+	e.add_theme_stylebox_override("normal", _style(Color(1, 1, 1, 0.92), 14, Color("2a1830")))
+	e.add_theme_stylebox_override("focus", _style(Color.WHITE, 14, Color("ff4f8b")))
+	e.add_theme_color_override("font_color", Color("2a1830"))
+	e.add_theme_color_override("font_placeholder_color", Color(0.16, 0.09, 0.19, 0.35))
+	return e
 var lobby_code: Label
 var lobby_list: Label
 var lobby_track: Label
@@ -998,9 +1021,19 @@ func _build_online() -> void:
 	var vb: VBoxContainer = o.get_meta("vb")
 	vb.add_theme_constant_override("separation", 8)
 	vb.add_child(_label("Play Online", 46, YELLOW, 14))
-	vb.add_child(_label("Race your friends. One of you hosts, the rest join with the room code.\nEmpty places are filled by AI critters (up to 6 racers).", 16, Color.WHITE, 5))
-	var host := _button("Host a game", Color("ff4f8b"), 28)
-	host.custom_minimum_size = Vector2(300, 60)
+	vb.add_child(_label("Race your friends: one hosts, the rest join with the code. AI fills empty places.", 15, Color.WHITE, 5))
+	var nr := _hbox(10)
+	nr.add_child(_label("Your name", 20, Color.WHITE, 6))
+	name_edit = _code_box("tap to type", 12, Vector2(250, 46), 24)
+	name_edit.text = race.net.my_typed_name() if race.net else ""
+	name_edit.text_changed.connect(func(t: String):
+		race.settings.set_value("online", "name", Net.clean_name(t))
+		race.settings.save("user://settings.cfg"))
+	name_edit.focus_entered.connect(func(): pad_target = name_edit)
+	nr.add_child(name_edit)
+	vb.add_child(nr)
+	var host := _button("Host a game", Color("ff4f8b"), 26)
+	host.custom_minimum_size = Vector2(280, 52)
 	host.pressed.connect(func():
 		Sfx.play("pick", 0.5)
 		race.net.host()
@@ -1008,27 +1041,18 @@ func _build_online() -> void:
 	var cc := CenterContainer.new()
 	cc.add_child(host)
 	vb.add_child(cc)
-	vb.add_child(_label("or join a friend", 18, Color(1, 1, 1, 0.8), 5))
 	var hb := _hbox(10)
-	code_edit = LineEdit.new()
-	code_edit.placeholder_text = "CODE"
-	code_edit.max_length = 4
-	code_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
-	code_edit.custom_minimum_size = Vector2(170, 56)
-	code_edit.add_theme_font_size_override("font_size", 30)
-	code_edit.add_theme_stylebox_override("normal", _style(Color(1, 1, 1, 0.92), 14, Color("2a1830")))
-	code_edit.add_theme_stylebox_override("focus", _style(Color.WHITE, 14, Color("ff4f8b")))
-	code_edit.add_theme_color_override("font_color", Color("2a1830"))
-	code_edit.add_theme_color_override("font_placeholder_color", Color(0.16, 0.09, 0.19, 0.35))
+	code_edit = _code_box("CODE", 4, Vector2(170, 52), 30)
 	code_edit.text_changed.connect(func(t: String):
 		var up := t.to_upper()
 		if up != t:
 			var c := code_edit.caret_column
 			code_edit.text = up
 			code_edit.caret_column = c)
+	code_edit.focus_entered.connect(func(): pad_target = code_edit)
 	code_edit.text_submitted.connect(func(_t): _do_join())
 	var join := _button("Join", Color("38b6a3"), 26)
-	join.custom_minimum_size = Vector2(130, 56)
+	join.custom_minimum_size = Vector2(130, 52)
 	join.pressed.connect(_do_join)
 	hb.add_child(code_edit)
 	hb.add_child(join)
@@ -1038,9 +1062,9 @@ func _build_online() -> void:
 	pad.columns = 10
 	pad.add_theme_constant_override("h_separation", 5)
 	pad.add_theme_constant_override("v_separation", 4)
-	var keys: Array = Array("1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("")) + ["←"]
+	var keys: Array = Array("1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("")) + ["Space", "←"]
 	for ch in keys:
-		var kb := _button(ch, Color(1, 1, 1, 0.18) if ch != "←" else Color("ff4f6e"), 18)
+		var kb := _button(ch, Color(1, 1, 1, 0.18) if ch != "←" else Color("ff4f6e"), 18 if ch != "Space" else 13)
 		kb.custom_minimum_size = Vector2(52, 34)
 		for st in ["normal", "hover", "pressed", "focus"]:
 			var sb: StyleBoxFlat = kb.get_theme_stylebox(st).duplicate()
@@ -1051,11 +1075,17 @@ func _build_online() -> void:
 		var c: String = ch
 		kb.pressed.connect(func():
 			Sfx.play("get", 0.3)
+			var e: LineEdit = pad_target if pad_target else code_edit
 			if c == "←":
-				code_edit.text = code_edit.text.substr(0, maxi(0, code_edit.text.length() - 1))
-			elif code_edit.text.length() < 4:
-				code_edit.text += c
-			code_edit.caret_column = code_edit.text.length())
+				e.text = e.text.substr(0, maxi(0, e.text.length() - 1))
+			elif e.text.length() < e.max_length:
+				if c == "Space":
+					if e == name_edit and e.text != "":
+						e.text += " "
+				else:
+					e.text += c
+			e.caret_column = e.text.length()
+			e.text_changed.emit(e.text))
 		pad.add_child(kb)
 	var padc := CenterContainer.new()
 	padc.add_child(pad)
@@ -1168,7 +1198,8 @@ func _refresh_lobby() -> void:
 	var lines := []
 	for id in ids:
 		var sp: Dictionary = Critters.SPECIES[n.players[id].sp]
-		lines.append("%s  %s%s%s" % [n.name_of(id), sp.name, "  (host)" if id == 1 else "", "  ← you" if id == n.my_id else ""])
+		var nm: String = n.names.get(id, "")
+		lines.append("%s  %s%s%s%s" % [n.name_of(id), sp.name, " (%s)" % nm if nm != "" else "", "  (host)" if id == 1 else "", "  ← you" if id == n.my_id else ""])
 	var free := 6 - ids.size()
 	if ids.size() > 0 and free > 0:
 		lines.append("+ %d AI critter%s" % [free, "" if free == 1 else "s"])

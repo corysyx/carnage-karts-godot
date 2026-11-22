@@ -14,7 +14,7 @@ const BROKERS := ["wss://broker.emqx.io:8084/mqtt", "wss://test.mosquitto.org:80
 const ROOT := "carnagekarts/v2/"
 enum Kind { DATA, HELLO, WELCOME, BYE, PING, FULL }
 const PING_EVERY := 1.0
-const VERSION := 3          # bump when the online protocol changes
+const VERSION := 4          # bump when the online protocol changes
 const TIMEOUT := 7.0
 
 signal refused(reason: String)   # "full", "racing" or "noroom"

@@ -30,6 +30,7 @@ var my_id := 0
 var status := ""
 ## net id -> {"sp": int, "name": String}
 var players := {}
+var names := {}                # net id -> typed name (kept for the whole session)
 var lobby_map := 0
 var lobby_laps := 3
 
@@ -83,6 +84,21 @@ func name_of(id: int) -> String:
 	var n := _player_no(id)
 	return "P%d" % n if n > 0 else "P?"
 
+## The name a player typed, or "P2" etc. if they didn't.
+func tag_of(id: int) -> String:
+	var nm: String = names.get(id, "")
+	return nm if nm != "" else name_of(id)
+
+static func clean_name(t: String) -> String:
+	var o := ""
+	for ch in t.strip_edges():
+		if ch.unicode_at(0) >= 32 and ch != "\n":
+			o += ch
+	return o.substr(0, 12).strip_edges()
+
+func my_typed_name() -> String:
+	return clean_name(str(race.settings.get_value("online", "name", "")))
+
 # ------------------------------------------------------------------ host / join
 func _new_room_code() -> String:
 	var rng := RandomNumberGenerator.new()
@@ -121,6 +137,7 @@ func host() -> void:
 	is_host = true
 	my_id = 1
 	players = {1: {"sp": race.selected}}
+	names = {1: my_typed_name()}
 	lobby_map = race.map_idx
 	lobby_laps = race.laps
 	if use_enet:
@@ -170,6 +187,7 @@ func leave() -> void:
 	in_race = false
 	is_host = false
 	players.clear()
+	names.clear()
 	latest.clear()
 	join_t = -1.0
 	my_id = 0
@@ -222,7 +240,7 @@ func _on_connected() -> void:
 	join_t = -1.0
 	my_id = multiplayer.get_unique_id()
 	_set_status("Connected")
-	c_hello.rpc_id(1, race.selected)
+	c_hello.rpc_id(1, race.selected, my_typed_name())
 
 func _on_peer_disconnected(id: int) -> void:
 	if not is_host:
@@ -247,13 +265,14 @@ func _free_sp(want: int, for_id: int) -> int:
 	return want
 
 @rpc("any_peer", "reliable")
-func c_hello(sp: int) -> void:
+func c_hello(sp: int, nm: String) -> void:
 	if not is_host:
 		return
 	var id := multiplayer.get_remote_sender_id()
 	if in_race or players.size() >= MAX_PLAYERS:
 		return
 	players[id] = {"sp": _free_sp(sp, id)}
+	names[id] = clean_name(nm)
 	_broadcast_lobby()
 
 @rpc("any_peer", "reliable")
@@ -283,7 +302,7 @@ func set_track(map: int, laps: int) -> void:
 func _broadcast_lobby() -> void:
 	var arr := []
 	for id in players:
-		arr.append([id, players[id].sp])
+		arr.append([id, players[id].sp, names.get(id, "")])
 	h_lobby.rpc(arr, lobby_map, lobby_laps)
 	h_lobby(arr, lobby_map, lobby_laps)
 
@@ -292,6 +311,8 @@ func h_lobby(arr: Array, map: int, laps: int) -> void:
 	players.clear()
 	for e in arr:
 		players[int(e[0])] = {"sp": int(e[1])}
+		if e.size() > 2:
+			names[int(e[0])] = clean_name(str(e[2]))
 	lobby_map = map
 	lobby_laps = laps
 	if players.has(my_id):

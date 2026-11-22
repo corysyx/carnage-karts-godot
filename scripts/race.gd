@@ -119,6 +119,9 @@ func _ready() -> void:
 	if "--autotest" in uargs:
 		autotest = true
 	for arg in uargs:
+		if arg.begins_with("--name="):
+			settings.set_value("online", "name", arg.substr(7))
+	for arg in uargs:
 		if arg == "--net-host":
 			net.host()
 			hud.show_screen("lobby")
@@ -236,6 +239,21 @@ func _spawn_online() -> void:
 		k.setup(self, world, Critters.SPECIES[sp_i], mine, slot)
 		k.net_owner = owner
 		k.puppet = not (mine or (owner == 0 and net.is_host))
+		if owner != 0 and not mine:
+			var tag := Label3D.new()
+			tag.text = net.tag_of(owner)
+			tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			tag.font = load("res://assets/fonts/Fredoka-SemiBold.ttf")
+			tag.font_size = 44
+			tag.pixel_size = 0.012
+			tag.outline_size = 14
+			tag.outline_modulate = Color("2a1830")
+			tag.modulate = k.sp.kart.lightened(0.35)
+			tag.position = Vector3(0, 2.3, 0)
+			tag.fixed_size = false
+			tag.no_depth_test = true
+			tag.render_priority = 10
+			k.add_child(tag)
 		k.place_on_grid((world.N - 5 - slot * 4 + world.N) % world.N, 1.75 if slot % 2 else -1.75)
 		racers.append(k)
 		if mine:
