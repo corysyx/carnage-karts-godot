@@ -48,6 +48,7 @@ var spin_a := 0.0
 var invuln := 0.0
 var shield := 0.0
 var boost := 0.0
+var last_pad := -1
 var items: Array = [null, null]
 var sel := 0
 var pending := ""
@@ -303,6 +304,13 @@ func step(dt: float, inp: Dictionary) -> void:
 	if off_t > (8.0 if is_player else 3.5):
 		respawn()
 	_update_seg()
+	# dash panels
+	var pad := world.pad_at(seg, nr.y) if on_ground and world.pads.size() > 0 else -1
+	if pad >= 0:
+		if pad != last_pad and is_player:
+			Sfx.play("boost", 1.1)
+		boost = maxf(boost, 1.1)
+	last_pad = pad
 
 ## Mario Kart 8 style drift: press to hop, hold a direction to lock the drift,
 ## steer into the turn to charge faster. Sparks go blue -> orange -> pink;

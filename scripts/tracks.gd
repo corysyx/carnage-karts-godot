@@ -44,7 +44,9 @@ const THEMES := [
 			"profile": [Vector2(0.0000, 11.94), Vector2(0.0312, 10.02), Vector2(0.0567, 13.62), Vector2(0.0851, 16.74), Vector2(0.1087, 17.22), Vector2(0.1295, 14.58), Vector2(0.1512, 12.42), Vector2(0.1824, 14.10), Vector2(0.2146, 11.70), Vector2(0.2363, 8.82), Vector2(0.2505, 9.54), Vector2(0.2713, 12.66), Vector2(0.2883, 11.94), Vector2(0.3072, 11.22), Vector2(0.3355, 7.14), Vector2(0.3620, 4.50), Vector2(0.3828, 8.10), Vector2(0.4083, 10.50), Vector2(0.4348, 13.86), Vector2(0.4650, 16.98), Vector2(0.4868, 14.58), Vector2(0.5198, 10.50), Vector2(0.5406, 11.46), Vector2(0.5681, 13.14), Vector2(0.5955, 14.58), Vector2(0.6229, 16.98), Vector2(0.6456, 19.62), Vector2(0.6664, 19.38), Vector2(0.6900, 19.14), Vector2(0.7136, 21.06), Vector2(0.7344, 22.02), Vector2(0.7609, 18.90), Vector2(0.7892, 18.42), Vector2(0.8129, 19.62), Vector2(0.8270, 17.22), Vector2(0.8507, 14.82), Vector2(0.8743, 11.22), Vector2(0.8932, 8.82), Vector2(0.9234, 6.90), Vector2(0.9565, 9.54), Vector2(0.9783, 11.94), Vector2(1.0000, 11.94)],
 			"forest": [Vector2(250, 165), Vector2(560, 140), Vector2(1000, 150), Vector2(1160, 250), Vector2(1255, 360), Vector2(1275, 700), Vector2(1270, 1000), Vector2(1240, 1240), Vector2(1100, 1540), Vector2(700, 1545), Vector2(230, 1545), Vector2(220, 1200), Vector2(330, 960), Vector2(100, 860), Vector2(90, 450), Vector2(150, 360), Vector2(250, 330)],
 			"lake": [Vector2(885, 1352), Vector2(125, 95)],
-			"trees": 3200,
+			"trees": 900,
+			# dash panels (plan pixels, placed in the driving direction)
+			"pads": [Vector2(994, 437), Vector2(716, 929), Vector2(911, 1079)],
 		},
 
 		"grass_a": "8ccf5a", "grass_b": "bddd6a", "sand": "ffd99a", "rock": "d8936a", "snow": "fff2dc",

@@ -100,6 +100,7 @@ func build(th: Dictionary) -> void:
 	_build_fences()
 	_build_water()
 	_build_trees()
+	_build_pads()
 	_build_scenery()
 	for f: float in [0.16, 0.4, 0.62, 0.84]:
 		var k := int(f * N)
@@ -753,6 +754,65 @@ func _build_water() -> void:
 	add_child(w)
 
 # ------------------------------------------------------------------ trees
+## Dash panels: Vector3(first sample, last sample, lateral centre).
+var pads: Array[Vector3] = []
+const PAD_HALF_LEN := 6        # samples either side of the centre (0.5 m each)
+const PAD_HALF_W := 2.3
+
+func _build_pads() -> void:
+	if lay.is_empty() or not lay.has("pads"):
+		return
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for v: Vector2 in lay.pads:
+		var q := _px(v)
+		var ng := nearest_global(q, 30.0)
+		if ng.x < 0:
+			continue
+		var k := int(ng.x)
+		var k0 := (k - PAD_HALF_LEN + N) % N
+		pads.append(Vector3(k0, (k + PAD_HALF_LEN) % N, 0.0))
+		var steps := PAD_HALF_LEN * 2
+		for i in steps:
+			var a := (k0 + i) % N
+			var b := (a + 1) % N
+			var na := Vector2(-T[a].y, T[a].x)
+			var nb := Vector2(-T[b].y, T[b].x)
+			var v0 := float(i) / steps
+			var v1 := float(i + 1) / steps
+			var pa0 := P[a] - na * PAD_HALF_W
+			var pa1 := P[a] + na * PAD_HALF_W
+			var pb0 := P[b] - nb * PAD_HALF_W
+			var pb1 := P[b] + nb * PAD_HALF_W
+			var y0 := TH[a] + 0.03
+			var y1 := TH[b] + 0.03
+			var verts := [[Vector3(pa0.x, y0, pa0.y), Vector2(0, v0)], [Vector3(pa1.x, y0, pa1.y), Vector2(1, v0)],
+				[Vector3(pb1.x, y1, pb1.y), Vector2(1, v1)], [Vector3(pb0.x, y1, pb0.y), Vector2(0, v1)]]
+			for tri in [[0, 1, 2], [0, 2, 3]]:
+				for t: int in tri:
+					st.set_uv(verts[t][1])
+					st.set_normal(Vector3.UP)
+					st.add_vertex(verts[t][0])
+	var mi := MeshInstance3D.new()
+	mi.mesh = st.commit()
+	var m := ShaderMaterial.new()
+	m.shader = preload("res://shaders/boost_pad.gdshader")
+	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.name = "DashPanels"
+	add_child(mi)
+
+## Index of the dash panel at this track sample and lateral offset, or -1.
+func pad_at(k: int, lat: float) -> int:
+	for i in pads.size():
+		var pd := pads[i]
+		var k0 := int(pd.x)
+		var k1 := int(pd.y)
+		var inside := (k >= k0 and k <= k1) if k0 <= k1 else (k >= k0 or k <= k1)
+		if inside and absf(lat - pd.z) < PAD_HALF_W + 0.3:
+			return i
+	return -1
+
 const SHADE_CELL := 4.0
 var shade_cells := {}          # Vector2i -> Array of Vector3(x, z, radius)
 var trunks: Array[Transform3D] = []
